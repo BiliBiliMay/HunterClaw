@@ -1,0 +1,8 @@
+Welcome to HunterClaw.
+
+This is the local workspace that the MVP agent can read, list, and write inside.
+Try asking:
+- list files
+- read file welcome.txt
+- write file notes.txt with content hello from HunterClaw
+

@@ -1,0 +1,10 @@
+node_modules
+.next
+dist
+coverage
+*.log
+.DS_Store
+data/agent.db
+data/agent.db-*
+playwright/.cache
+
