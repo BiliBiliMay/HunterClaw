@@ -12,20 +12,47 @@ import {
   getApprovalRequest,
   getHistoryPayload,
   getLatestUserMessage,
+  getMessageById,
   insertMessage,
   loadConversationMemory,
+  logLlmUsageEvent,
   logToolExecutionStart,
   maybeSummarizeConversation,
   resolveApprovalRequest,
 } from "@/lib/agent/memory";
 import { planNextStep } from "@/lib/agent/planner";
 import { evaluateToolSafety } from "@/lib/agent/safety";
-import { localProvider } from "@/lib/llm/localProvider";
 import type { AgentProvider } from "@/lib/llm/provider";
+import { getDefaultProvider } from "@/lib/llm/resolveProvider";
+import {
+  toApprovalSummaryRecord,
+  toToolTimelineRecord,
+} from "@/lib/agent/presentation";
 import { validateToolCall } from "@/lib/tools/registry";
 import { toErrorMessage } from "@/lib/utils";
 
-const LOOP_LIMIT = 3;
+const LOOP_LIMIT = 8;
+
+async function recordAssistantError({
+  conversationId,
+  provider,
+  sourceMessageId,
+  content,
+}: {
+  conversationId: string;
+  provider: AgentProvider;
+  sourceMessageId: string | null;
+  content: string;
+}) {
+  await insertMessage({
+    conversationId,
+    role: "assistant",
+    kind: "error",
+    content,
+  });
+
+  await maybeSummarizeConversation(provider, conversationId, sourceMessageId);
+}
 
 async function buildChatResponse(
   conversationId: string,
@@ -37,7 +64,7 @@ async function buildChatResponse(
   return {
     status,
     ...history,
-    pendingApproval,
+    pendingApproval: pendingApproval ? toApprovalSummaryRecord(pendingApproval) : undefined,
   };
 }
 
@@ -51,19 +78,17 @@ async function buildApproveResponse(
   return {
     status,
     ...history,
-    toolExecution,
+    toolExecution: toolExecution ? toToolTimelineRecord(toolExecution) : undefined,
   };
 }
 
-async function executeToolAndRespond({
+async function executeTool({
   conversationId,
-  provider,
   toolName,
   args,
   riskLevel,
 }: {
   conversationId: string;
-  provider: AgentProvider;
   toolName: string;
   args: unknown;
   riskLevel: ToolResult["riskLevel"];
@@ -101,64 +126,58 @@ async function executeToolAndRespond({
   }
 
   const storedExecution = await finishToolExecution(execution.id, toolResult);
-  const memory = await loadConversationMemory(conversationId);
-  const latestUserMessage = await getLatestUserMessage(conversationId);
-  const finalDecision = await provider.generateResponse({
-    conversationId,
-    summary: memory.summary,
-    recentMessages: memory.recentMessages,
-    latestUserMessage,
-    lastToolResult: toolResult,
-  });
 
-  const assistantContent =
-    finalDecision.type === "message"
-      ? finalDecision.content
-      : "The tool finished. Ask for the next step when you are ready.";
-
-  await insertMessage({
-    conversationId,
-    role: "assistant",
-    kind: toolResult.status === "success" ? "text" : "error",
-    content: assistantContent,
-    meta: storedExecution
-      ? {
-          toolExecutionId: storedExecution.id,
-        }
-      : null,
-  });
-
-  await maybeSummarizeConversation(provider, conversationId);
-
-  return storedExecution;
+  return {
+    storedExecution,
+    toolResult,
+  };
 }
 
-export async function runAgentTurn({
-  message,
-  conversationId = DEFAULT_CONVERSATION_ID,
-  provider = localProvider,
+async function continueAgentLoop({
+  conversationId,
+  provider,
+  latestUserMessageId,
+  latestUserMessage,
+  initialToolResult,
 }: {
-  message: string;
-  conversationId?: string;
-  provider?: AgentProvider;
-}): Promise<ChatRouteResponse> {
-  await insertMessage({
-    conversationId,
-    role: "user",
-    content: message,
-  });
-
-  let lastToolResult: ToolResult | undefined;
+  conversationId: string;
+  provider: AgentProvider;
+  latestUserMessageId: string | null;
+  latestUserMessage: string;
+  initialToolResult?: ToolResult;
+}) {
+  let lastToolResult = initialToolResult;
 
   for (let index = 0; index < LOOP_LIMIT; index += 1) {
     const memory = await loadConversationMemory(conversationId);
-    const decision = await planNextStep(provider, {
-      conversationId,
-      summary: memory.summary,
-      recentMessages: memory.recentMessages,
-      latestUserMessage: message,
-      lastToolResult,
-    });
+    let decisionResult;
+
+    try {
+      decisionResult = await planNextStep(provider, {
+        conversationId,
+        summary: memory.summary,
+        recentMessages: memory.recentMessages,
+        recentToolExecutions: memory.recentToolExecutions,
+        latestUserMessage,
+        lastToolResult,
+        stepIndex: index + 1,
+      });
+      await logLlmUsageEvent({
+        conversationId,
+        sourceMessageId: latestUserMessageId,
+        usage: decisionResult.usage,
+      });
+    } catch (error) {
+      await recordAssistantError({
+        conversationId,
+        provider,
+        sourceMessageId: latestUserMessageId,
+        content: `I couldn't plan the next step because ${toErrorMessage(error)}`,
+      });
+      return buildChatResponse(conversationId, "error");
+    }
+
+    const decision = decisionResult.decision;
 
     if (decision.type === "message") {
       await insertMessage({
@@ -167,62 +186,107 @@ export async function runAgentTurn({
         kind: "text",
         content: decision.content,
       });
-      await maybeSummarizeConversation(provider, conversationId);
+      await maybeSummarizeConversation(provider, conversationId, latestUserMessageId);
       return buildChatResponse(conversationId, "completed");
     }
 
-    const { tool, parsedArgs } = validateToolCall(decision.toolName, decision.args);
-    const riskLevel = tool.getRiskLevel(parsedArgs);
-    const safety = await evaluateToolSafety(decision.toolName, parsedArgs, riskLevel);
+    let tool;
+    let parsedArgs;
+    let riskLevel: ToolResult["riskLevel"];
+
+    try {
+      const validatedToolCall = validateToolCall(decision.toolName, decision.args);
+      tool = validatedToolCall.tool;
+      parsedArgs = validatedToolCall.parsedArgs;
+      riskLevel = tool.getRiskLevel(parsedArgs);
+    } catch (error) {
+      lastToolResult = {
+        toolName: decision.toolName,
+        args: decision.args,
+        riskLevel: "low",
+        status: "error",
+        output: null,
+        error: `Invalid ${decision.toolName} call: ${toErrorMessage(error)}`,
+      };
+      continue;
+    }
+
+    let safety;
+
+    try {
+      safety = await evaluateToolSafety(decision.toolName, parsedArgs, riskLevel);
+    } catch (error) {
+      lastToolResult = {
+        toolName: decision.toolName,
+        args: parsedArgs,
+        riskLevel,
+        status: "error",
+        output: null,
+        error: `Safety evaluation failed for ${decision.toolName}: ${toErrorMessage(error)}`,
+      };
+      continue;
+    }
 
     if (safety.requiresApproval) {
       const pendingApproval = await createApprovalRequest({
         conversationId,
+        sourceMessageId: latestUserMessageId,
         toolName: decision.toolName,
         args: parsedArgs,
         riskLevel,
         reason: decision.reason,
       });
-      await maybeSummarizeConversation(provider, conversationId);
+      await maybeSummarizeConversation(provider, conversationId, latestUserMessageId);
       return buildChatResponse(conversationId, "approval_required", pendingApproval);
     }
 
-    const storedExecution = await executeToolAndRespond({
+    const executionResult = await executeTool({
       conversationId,
-      provider,
       toolName: decision.toolName,
       args: parsedArgs,
       riskLevel,
     });
 
-    lastToolResult = storedExecution
-      ? {
-          toolName: storedExecution.toolName,
-          args: storedExecution.args,
-          riskLevel: storedExecution.riskLevel,
-          status: storedExecution.status === "running" ? "error" : storedExecution.status,
-          output: storedExecution.result as ToolResult["output"],
-          error: storedExecution.error,
-        }
-      : undefined;
-
-    return buildChatResponse(conversationId, "completed");
+    lastToolResult = executionResult.toolResult;
   }
 
-  await insertMessage({
+  await recordAssistantError({
     conversationId,
-    role: "assistant",
-    kind: "error",
-    content: "The agent stopped after reaching the loop limit.",
+    provider,
+    sourceMessageId: latestUserMessageId,
+    content: "I hit the step limit before I could finish. Ask me to continue or narrow the task.",
   });
 
   return buildChatResponse(conversationId, "error");
 }
 
+export async function runAgentTurn({
+  message,
+  conversationId = DEFAULT_CONVERSATION_ID,
+  provider = getDefaultProvider(),
+}: {
+  message: string;
+  conversationId?: string;
+  provider?: AgentProvider;
+}): Promise<ChatRouteResponse> {
+  const userMessage = await insertMessage({
+    conversationId,
+    role: "user",
+    content: message,
+  });
+
+  return continueAgentLoop({
+    conversationId,
+    provider,
+    latestUserMessageId: userMessage.id,
+    latestUserMessage: userMessage.content,
+  });
+}
+
 export async function handleApprovalDecision({
   requestId,
   decision,
-  provider = localProvider,
+  provider = getDefaultProvider(),
 }: {
   requestId: string;
   decision: "approve" | "deny";
@@ -253,18 +317,34 @@ export async function handleApprovalDecision({
         approvalRequestId: updatedApproval.id,
       },
     });
-    await maybeSummarizeConversation(provider, updatedApproval.conversationId);
+    await maybeSummarizeConversation(provider, updatedApproval.conversationId, updatedApproval.sourceMessageId);
     return buildApproveResponse(updatedApproval.conversationId, "denied");
   }
 
-  const storedExecution = await executeToolAndRespond({
+  const sourceMessage = updatedApproval.sourceMessageId
+    ? await getMessageById(updatedApproval.sourceMessageId)
+    : null;
+  const latestUserMessage = sourceMessage?.content ?? await getLatestUserMessage(updatedApproval.conversationId);
+  const executionResult = await executeTool({
     conversationId: updatedApproval.conversationId,
-    provider,
     toolName: updatedApproval.toolName,
     args: updatedApproval.args,
     riskLevel: updatedApproval.riskLevel,
   });
 
-  return buildApproveResponse(updatedApproval.conversationId, "completed", storedExecution ?? undefined);
-}
+  const continuedResponse = await continueAgentLoop({
+    conversationId: updatedApproval.conversationId,
+    provider,
+    latestUserMessageId: sourceMessage?.id ?? updatedApproval.sourceMessageId,
+    latestUserMessage,
+    initialToolResult: executionResult.toolResult,
+  });
 
+  return {
+    ...continuedResponse,
+    status: "completed",
+    toolExecution: executionResult.storedExecution
+      ? toToolTimelineRecord(executionResult.storedExecution)
+      : undefined,
+  };
+}

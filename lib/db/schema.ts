@@ -64,11 +64,35 @@ export const toolExecutions = sqliteTable(
   }),
 );
 
+export const llmUsageEvents = sqliteTable(
+  "llm_usage_events",
+  {
+    id: text("id").primaryKey(),
+    conversationId: text("conversation_id").notNull(),
+    sourceMessageId: text("source_message_id"),
+    providerName: text("provider_name").notNull(),
+    modelName: text("model_name").notNull(),
+    operation: text("operation").notNull(),
+    inputTokens: text("input_tokens"),
+    outputTokens: text("output_tokens"),
+    totalTokens: text("total_tokens"),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => ({
+    conversationCreatedIdx: index("llm_usage_events_conversation_created_idx").on(
+      table.conversationId,
+      table.createdAt,
+    ),
+    sourceMessageIdx: index("llm_usage_events_source_message_idx").on(table.sourceMessageId),
+  }),
+);
+
 export const approvalRequests = sqliteTable(
   "approval_requests",
   {
     id: text("id").primaryKey(),
     conversationId: text("conversation_id").notNull(),
+    sourceMessageId: text("source_message_id"),
     toolName: text("tool_name").notNull(),
     argsJson: text("args_json").notNull(),
     riskLevel: text("risk_level").notNull(),
@@ -85,4 +109,3 @@ export const approvalRequests = sqliteTable(
     statusIdx: index("approval_requests_status_idx").on(table.status),
   }),
 );
-

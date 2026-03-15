@@ -2,17 +2,28 @@ import { asc, desc, eq } from "drizzle-orm";
 
 import type {
   ApprovalRequestRecord,
+  ApprovalSummaryRecord,
   ChatMessage,
   ChatRole,
+  ConversationUsageSummary,
   HistoryPayload,
   JsonRecord,
+  LlmUsageEvent,
   MessageKind,
+  ProviderUsage,
+  ToolTimelineRecord,
   ToolExecutionRecord,
   ToolResult,
+  UsageTotals,
 } from "@/lib/agent/types";
+import {
+  toApprovalSummaryRecord,
+  toToolTimelineRecord,
+} from "@/lib/agent/presentation";
 import { db } from "@/lib/db/client";
 import {
   approvalRequests,
+  llmUsageEvents,
   messages,
   preferences,
   summaries,
@@ -23,6 +34,26 @@ import { createId, nowIso, safeJsonParse, toJsonString } from "@/lib/utils";
 
 const SUMMARY_TRIGGER_COUNT = 12;
 const RECENT_RAW_MESSAGES = 8;
+const RECENT_TOOL_EXECUTIONS = 6;
+
+function createEmptyUsageTotals(): UsageTotals {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    knownEvents: 0,
+    unknownEvents: 0,
+  };
+}
+
+function parseTokenValue(value: string | null) {
+  if (!value) {
+    return null;
+  }
+
+  const parsedValue = Number.parseInt(value, 10);
+  return Number.isFinite(parsedValue) ? parsedValue : null;
+}
 
 function mapMessageRow(row: typeof messages.$inferSelect): ChatMessage {
   return {
@@ -55,6 +86,7 @@ function mapApprovalRow(row: typeof approvalRequests.$inferSelect): ApprovalRequ
   return {
     id: row.id,
     conversationId: row.conversationId,
+    sourceMessageId: row.sourceMessageId,
     toolName: row.toolName,
     args: safeJsonParse(row.argsJson, null),
     riskLevel: row.riskLevel as ApprovalRequestRecord["riskLevel"],
@@ -63,6 +95,44 @@ function mapApprovalRow(row: typeof approvalRequests.$inferSelect): ApprovalRequ
     createdAt: row.createdAt,
     resolvedAt: row.resolvedAt,
   };
+}
+
+function mapLlmUsageRow(row: typeof llmUsageEvents.$inferSelect): LlmUsageEvent {
+  return {
+    id: row.id,
+    conversationId: row.conversationId,
+    sourceMessageId: row.sourceMessageId,
+    providerName: row.providerName,
+    modelName: row.modelName,
+    operation: row.operation as LlmUsageEvent["operation"],
+    inputTokens: parseTokenValue(row.inputTokens),
+    outputTokens: parseTokenValue(row.outputTokens),
+    totalTokens: parseTokenValue(row.totalTokens),
+    createdAt: row.createdAt,
+  };
+}
+
+function aggregateUsage(rows: LlmUsageEvent[]): UsageTotals {
+  const totals = createEmptyUsageTotals();
+
+  for (const row of rows) {
+    if (row.inputTokens != null) {
+      totals.inputTokens += row.inputTokens;
+    }
+
+    if (row.outputTokens != null) {
+      totals.outputTokens += row.outputTokens;
+    }
+
+    if (row.totalTokens != null) {
+      totals.totalTokens += row.totalTokens;
+      totals.knownEvents += 1;
+    } else {
+      totals.unknownEvents += 1;
+    }
+  }
+
+  return totals;
 }
 
 export async function insertMessage({
@@ -129,11 +199,20 @@ export async function loadConversationMemory(conversationId: string) {
     ? mappedMessages.findIndex((message) => message.id === summaryRow.lastMessageId)
     : -1;
   const recentMessages = mappedMessages.slice(cutoffIndex + 1).slice(-RECENT_RAW_MESSAGES);
+  const recentToolExecutionRows = db
+    .select()
+    .from(toolExecutions)
+    .where(eq(toolExecutions.conversationId, conversationId))
+    .orderBy(desc(toolExecutions.createdAt))
+    .limit(RECENT_TOOL_EXECUTIONS)
+    .all()
+    .reverse();
 
   return {
     conversationId,
     summary: summaryRow?.content ?? null,
     recentMessages,
+    recentToolExecutions: recentToolExecutionRows.map(mapToolExecutionRow),
   };
 }
 
@@ -149,9 +228,61 @@ export async function getLatestUserMessage(conversationId: string) {
   return row?.content ?? "";
 }
 
+export async function getMessageById(messageId: string) {
+  const row = db
+    .select()
+    .from(messages)
+    .where(eq(messages.id, messageId))
+    .limit(1)
+    .all()[0];
+
+  return row ? mapMessageRow(row) : null;
+}
+
+export async function logLlmUsageEvent({
+  conversationId,
+  sourceMessageId,
+  usage,
+}: {
+  conversationId: string;
+  sourceMessageId: string | null;
+  usage: ProviderUsage;
+}) {
+  const event: LlmUsageEvent = {
+    id: createId("usage"),
+    conversationId,
+    sourceMessageId,
+    providerName: usage.providerName,
+    modelName: usage.modelName,
+    operation: usage.operation,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    totalTokens: usage.totalTokens,
+    createdAt: nowIso(),
+  };
+
+  db.insert(llmUsageEvents)
+    .values({
+      id: event.id,
+      conversationId: event.conversationId,
+      sourceMessageId: event.sourceMessageId,
+      providerName: event.providerName,
+      modelName: event.modelName,
+      operation: event.operation,
+      inputTokens: event.inputTokens != null ? String(event.inputTokens) : null,
+      outputTokens: event.outputTokens != null ? String(event.outputTokens) : null,
+      totalTokens: event.totalTokens != null ? String(event.totalTokens) : null,
+      createdAt: event.createdAt,
+    })
+    .run();
+
+  return event;
+}
+
 export async function maybeSummarizeConversation(
   provider: AgentProvider,
   conversationId: string,
+  sourceMessageId: string | null = null,
 ) {
   if (!provider.summarize) {
     return null;
@@ -180,11 +311,30 @@ export async function maybeSummarizeConversation(
     return null;
   }
 
-  const summaryContent = await provider.summarize({
+  let summaryResult;
+
+  try {
+    summaryResult = await provider.summarize({
+      conversationId,
+      previousSummary: summaryRow?.content ?? null,
+      messages: messagesToSummarize,
+    });
+  } catch (error) {
+    console.warn("Skipping memory summarization after provider error:", error);
+    return null;
+  }
+
+  await logLlmUsageEvent({
     conversationId,
-    previousSummary: summaryRow?.content ?? null,
-    messages: messagesToSummarize,
+    sourceMessageId,
+    usage: summaryResult.usage,
   });
+
+  const summaryContent = summaryResult.summary;
+  if (!summaryContent.trim()) {
+    return null;
+  }
+
   const lastMessage = messagesToSummarize[messagesToSummarize.length - 1];
 
   db.insert(summaries)
@@ -202,12 +352,14 @@ export async function maybeSummarizeConversation(
 
 export async function createApprovalRequest({
   conversationId,
+  sourceMessageId,
   toolName,
   args,
   riskLevel,
   reason,
 }: {
   conversationId: string;
+  sourceMessageId: string | null;
   toolName: string;
   args: unknown;
   riskLevel: ApprovalRequestRecord["riskLevel"];
@@ -216,6 +368,7 @@ export async function createApprovalRequest({
   const approvalRequest: ApprovalRequestRecord = {
     id: createId("approval"),
     conversationId,
+    sourceMessageId,
     toolName,
     args,
     riskLevel,
@@ -229,6 +382,7 @@ export async function createApprovalRequest({
     .values({
       id: approvalRequest.id,
       conversationId,
+      sourceMessageId,
       toolName,
       argsJson: toJsonString(args),
       riskLevel,
@@ -345,6 +499,29 @@ export async function finishToolExecution(
   return row ? mapToolExecutionRow(row) : null;
 }
 
+async function getConversationUsageSummary(
+  conversationId: string,
+  mappedMessages: ChatMessage[],
+): Promise<ConversationUsageSummary> {
+  const usageRows = db
+    .select()
+    .from(llmUsageEvents)
+    .where(eq(llmUsageEvents.conversationId, conversationId))
+    .orderBy(asc(llmUsageEvents.createdAt))
+    .all()
+    .map(mapLlmUsageRow);
+
+  const latestUserMessage = [...mappedMessages].reverse().find((message) => message.role === "user");
+  const lastTurnUsageRows = latestUserMessage
+    ? usageRows.filter((row) => row.sourceMessageId === latestUserMessage.id)
+    : [];
+
+  return {
+    totals: aggregateUsage(usageRows),
+    lastTurn: latestUserMessage ? aggregateUsage(lastTurnUsageRows) : null,
+  };
+}
+
 export async function getHistoryPayload(conversationId: string): Promise<HistoryPayload> {
   const messageRows = db
     .select()
@@ -365,11 +542,16 @@ export async function getHistoryPayload(conversationId: string): Promise<History
     .orderBy(asc(approvalRequests.createdAt))
     .all()
     .filter((row) => row.status === "pending");
+  const mappedMessages = messageRows.map(mapMessageRow);
+  const rawToolExecutions = toolRows.map(mapToolExecutionRow);
+  const rawApprovals = approvalRows.map(mapApprovalRow);
+  const usage = await getConversationUsageSummary(conversationId, mappedMessages);
 
   return {
-    messages: messageRows.map(mapMessageRow),
-    toolExecutions: toolRows.map(mapToolExecutionRow),
-    pendingApprovals: approvalRows.map(mapApprovalRow),
+    messages: mappedMessages,
+    toolExecutions: rawToolExecutions.map(toToolTimelineRecord),
+    pendingApprovals: rawApprovals.map(toApprovalSummaryRecord),
+    usage,
   };
 }
 

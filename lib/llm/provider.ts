@@ -1,7 +1,8 @@
 import type {
   ChatMessage,
   ProviderContext,
-  ProviderDecision,
+  ProviderDecisionResult,
+  ProviderSummaryResult,
 } from "@/lib/agent/types";
 
 export type SummaryContext = {
@@ -12,8 +13,7 @@ export type SummaryContext = {
 
 export interface AgentProvider {
   name: string;
-  generateResponse(context: ProviderContext): Promise<ProviderDecision>;
-  plan?(context: ProviderContext): Promise<ProviderDecision>;
-  summarize?(context: SummaryContext): Promise<string>;
+  generateResponse(context: ProviderContext): Promise<ProviderDecisionResult>;
+  plan?(context: ProviderContext): Promise<ProviderDecisionResult>;
+  summarize?(context: SummaryContext): Promise<ProviderSummaryResult>;
 }
-

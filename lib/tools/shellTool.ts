@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { z } from "zod";
 
 import type { JsonValue, RiskLevel } from "@/lib/agent/types";
-import { WORKSPACE_ROOT } from "@/lib/db/client";
+import { AGENT_FS_ROOT } from "@/lib/db/client";
 
 const BLOCKED_OPERATOR_PATTERN = /[|><;&`]/;
 const BLOCKED_FRAGMENT_PATTERN = /\$\(|\n|\r/;
@@ -23,16 +23,29 @@ const BLOCKED_COMMAND_WORDS = new Set([
   "dd",
   "mkfs",
   "truncate",
-  "python",
-  "python3",
-  "node",
-  "npm",
-  "pnpm",
-  "yarn",
-  "bun",
 ]);
-const ALLOWED_COMMANDS = new Set(["pwd", "ls", "find", "cat", "head", "tail", "wc", "echo", "rg", "git"]);
-const ALLOWED_GIT_SUBCOMMANDS = new Set(["status", "log", "diff", "show", "rev-parse", "branch"]);
+const ALLOWED_COMMANDS = new Set([
+  "pwd",
+  "ls",
+  "find",
+  "cat",
+  "head",
+  "tail",
+  "wc",
+  "echo",
+  "rg",
+  "git",
+  "sed",
+]);
+const ALLOWED_GIT_SUBCOMMANDS = new Set([
+  "status",
+  "log",
+  "diff",
+  "show",
+  "rev-parse",
+  "branch",
+  "ls-files",
+]);
 
 export const shellToolSchema = z.object({
   command: z.string().min(1),
@@ -54,6 +67,24 @@ function stripQuotes(token: string) {
 function tokenizeCommand(command: string) {
   const matches = command.match(/"[^"]*"|'[^']*'|\S+/g);
   return (matches ?? []).map(stripQuotes);
+}
+
+function assertNoPathEscape(tokens: string[]) {
+  for (const token of tokens) {
+    if (!token || token.startsWith("-")) {
+      continue;
+    }
+
+    if (
+      token === ".." ||
+      token.startsWith("../") ||
+      token.includes("/../") ||
+      token.startsWith("/") ||
+      token.startsWith("~")
+    ) {
+      throw new Error(`Blocked: path '${token}' escapes the project root.`);
+    }
+  }
 }
 
 function validateCommand(command: string) {
@@ -80,6 +111,8 @@ function validateCommand(command: string) {
     }
   }
 
+  assertNoPathEscape(tokens.slice(1));
+
   if (executable === "git") {
     const subcommand = tokens[1];
 
@@ -98,7 +131,7 @@ function validateCommand(command: string) {
 async function runSpawn(command: string, args: string[]) {
   return new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve, reject) => {
     const child = spawn(command, args, {
-      cwd: WORKSPACE_ROOT,
+      cwd: AGENT_FS_ROOT,
       env: process.env,
       shell: false,
     });
@@ -137,7 +170,7 @@ async function runSpawn(command: string, args: string[]) {
 
 export const shellTool = {
   name: "shellTool",
-  description: "Run a small allowlist of readonly shell commands inside the workspace.",
+  description: "Run a small allowlist of readonly shell commands inside the project root.",
   schema: shellToolSchema,
   getRiskLevel(_args: ShellToolArgs): RiskLevel {
     return "low";

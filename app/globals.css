@@ -4,15 +4,34 @@
 
 :root {
   color-scheme: light;
+  --hc-bg: #eef3f6;
+  --hc-bg-deep: #dfe8ef;
+  --hc-grid: rgba(15, 23, 42, 0.05);
+  --hc-surface: rgba(255, 255, 255, 0.88);
+  --hc-panel-soft: rgba(248, 250, 252, 0.92);
+  --hc-border: rgba(148, 163, 184, 0.22);
+  --hc-border-strong: rgba(100, 116, 139, 0.28);
+  --hc-ink: #0b1322;
+  --hc-text: #102033;
+  --hc-muted: #607086;
 }
 
 body {
   min-height: 100vh;
+  font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
   background:
-    radial-gradient(circle at top left, rgba(56, 189, 248, 0.16), transparent 32%),
-    radial-gradient(circle at top right, rgba(16, 185, 129, 0.16), transparent 28%),
-    linear-gradient(180deg, #f5f7fb 0%, #eef3fb 100%);
-  color: #0f172a;
+    linear-gradient(var(--hc-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--hc-grid) 1px, transparent 1px),
+    radial-gradient(circle at top left, rgba(14, 165, 233, 0.14), transparent 28%),
+    radial-gradient(circle at right 10% top 15%, rgba(245, 158, 11, 0.12), transparent 24%),
+    linear-gradient(180deg, var(--hc-bg) 0%, var(--hc-bg-deep) 100%);
+  background-size:
+    32px 32px,
+    32px 32px,
+    auto,
+    auto,
+    auto;
+  color: var(--hc-text);
 }
 
 * {
@@ -22,4 +41,3 @@ body {
 ::selection {
   background: rgba(56, 189, 248, 0.24);
 }
-

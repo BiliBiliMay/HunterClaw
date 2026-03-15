@@ -13,7 +13,7 @@ export async function evaluateToolSafety(
 ): Promise<SafetyEvaluation> {
   let requiresApproval = riskLevel !== "low";
 
-  if (toolName === "fileTool" && isWriteFileAction(args)) {
+  if (toolName === "fileTool" && isWriteFileAction(args) && riskLevel === "medium") {
     const preferenceValue = await getPreference("autoApproveFileWrites");
     const autoApproveFromEnv = process.env.AUTO_APPROVE_FILE_WRITES === "true";
 
@@ -49,4 +49,3 @@ function isInteractiveBrowserAction(args: unknown) {
     (args.action === "click" || args.action === "type")
   );
 }
-

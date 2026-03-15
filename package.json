@@ -6,14 +6,16 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "next typegen && tsc --noEmit",
     "db:setup": "tsx scripts/db-setup.ts",
+    "agent:cli": "tsx scripts/agent-cli.ts",
     "playwright:install": "playwright install chromium"
   },
   "dependencies": {
     "better-sqlite3": "^11.7.0",
     "drizzle-orm": "^0.41.0",
     "next": "^15.2.2",
+    "openai": "^6.29.0",
     "playwright": "^1.51.1",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

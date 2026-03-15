@@ -5,6 +5,7 @@ export type MessageKind = "text" | "error";
 export type RiskLevel = "low" | "medium" | "high";
 export type ToolExecutionStatus = "running" | "success" | "error" | "blocked";
 export type ApprovalStatus = "pending" | "approved" | "denied";
+export type LlmUsageOperation = "decision" | "summary";
 
 export type JsonValue =
   | string
@@ -44,6 +45,7 @@ export type ToolResult = {
 export type ApprovalRequestRecord = {
   id: string;
   conversationId: string;
+  sourceMessageId: string | null;
   toolName: string;
   args: unknown;
   riskLevel: RiskLevel;
@@ -66,6 +68,60 @@ export type ToolExecutionRecord = {
   finishedAt: string | null;
 };
 
+export type ToolTimelineRecord = {
+  id: string;
+  toolName: string;
+  riskLevel: RiskLevel;
+  status: ToolExecutionStatus;
+  summary: string;
+  createdAt: string;
+  finishedAt: string | null;
+};
+
+export type ApprovalSummaryRecord = {
+  id: string;
+  toolName: string;
+  riskLevel: RiskLevel;
+  summary: string;
+  createdAt: string;
+  resolvedAt: string | null;
+};
+
+export type UsageTotals = {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  knownEvents: number;
+  unknownEvents: number;
+};
+
+export type ConversationUsageSummary = {
+  totals: UsageTotals;
+  lastTurn: UsageTotals | null;
+};
+
+export type LlmUsageEvent = {
+  id: string;
+  conversationId: string;
+  sourceMessageId: string | null;
+  providerName: string;
+  modelName: string;
+  operation: LlmUsageOperation;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+  createdAt: string;
+};
+
+export type ProviderUsage = {
+  providerName: string;
+  modelName: string;
+  operation: LlmUsageOperation;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  totalTokens: number | null;
+};
+
 export type ProviderDecision =
   | {
       type: "message";
@@ -75,24 +131,38 @@ export type ProviderDecision =
       type: "tool_call";
     } & ToolCall);
 
+export type ProviderDecisionResult = {
+  decision: ProviderDecision;
+  usage: ProviderUsage;
+};
+
+export type ProviderSummaryResult = {
+  summary: string;
+  usage: ProviderUsage;
+};
+
 export type ProviderContext = {
   conversationId: string;
   summary: string | null;
   recentMessages: ChatMessage[];
+  recentToolExecutions: ToolExecutionRecord[];
   latestUserMessage: string;
   lastToolResult?: ToolResult;
+  stepIndex: number;
 };
 
 export type AgentContext = {
   conversationId: string;
   summary: string | null;
   recentMessages: ChatMessage[];
+  recentToolExecutions: ToolExecutionRecord[];
 };
 
 export type HistoryPayload = {
   messages: ChatMessage[];
-  toolExecutions: ToolExecutionRecord[];
-  pendingApprovals: ApprovalRequestRecord[];
+  toolExecutions: ToolTimelineRecord[];
+  pendingApprovals: ApprovalSummaryRecord[];
+  usage: ConversationUsageSummary;
 };
 
 export type ChatRouteStatus = "completed" | "approval_required" | "error";
@@ -100,13 +170,12 @@ export type ApproveRouteStatus = "completed" | "denied" | "error";
 
 export type ChatRouteResponse = HistoryPayload & {
   status: ChatRouteStatus;
-  pendingApproval?: ApprovalRequestRecord;
+  pendingApproval?: ApprovalSummaryRecord;
   error?: string;
 };
 
 export type ApproveRouteResponse = HistoryPayload & {
   status: ApproveRouteStatus;
-  toolExecution?: ToolExecutionRecord;
+  toolExecution?: ToolTimelineRecord;
   error?: string;
 };
-

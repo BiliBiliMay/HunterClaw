@@ -59,9 +59,29 @@ sqlite.exec(`
   CREATE INDEX IF NOT EXISTS tool_executions_conversation_created_idx
     ON tool_executions (conversation_id, created_at);
 
+  CREATE TABLE IF NOT EXISTS llm_usage_events (
+    id TEXT PRIMARY KEY NOT NULL,
+    conversation_id TEXT NOT NULL,
+    source_message_id TEXT,
+    provider_name TEXT NOT NULL,
+    model_name TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    input_tokens TEXT,
+    output_tokens TEXT,
+    total_tokens TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS llm_usage_events_conversation_created_idx
+    ON llm_usage_events (conversation_id, created_at);
+
+  CREATE INDEX IF NOT EXISTS llm_usage_events_source_message_idx
+    ON llm_usage_events (source_message_id);
+
   CREATE TABLE IF NOT EXISTS approval_requests (
     id TEXT PRIMARY KEY NOT NULL,
     conversation_id TEXT NOT NULL,
+    source_message_id TEXT,
     tool_name TEXT NOT NULL,
     args_json TEXT NOT NULL,
     risk_level TEXT NOT NULL,
@@ -77,6 +97,17 @@ sqlite.exec(`
   CREATE INDEX IF NOT EXISTS approval_requests_status_idx
     ON approval_requests (status);
 `);
+
+const approvalColumns = sqlite
+  .prepare("PRAGMA table_info(approval_requests)")
+  .all() as Array<{ name: string }>;
+
+if (!approvalColumns.some((column) => column.name === "source_message_id")) {
+  sqlite.exec(`
+    ALTER TABLE approval_requests
+    ADD COLUMN source_message_id TEXT;
+  `);
+}
 
 if (!fs.existsSync(welcomeFilePath)) {
   fs.writeFileSync(
@@ -96,4 +127,3 @@ if (!fs.existsSync(welcomeFilePath)) {
 
 console.log(`Database ready at ${dbPath}`);
 console.log(`Workspace ready at ${workspaceRoot}`);
-
