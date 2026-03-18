@@ -5,7 +5,8 @@ export type MessageKind = "text" | "error";
 export type RiskLevel = "low" | "medium" | "high";
 export type ToolExecutionStatus = "running" | "success" | "error" | "blocked";
 export type ApprovalStatus = "pending" | "approved" | "denied";
-export type LlmUsageOperation = "decision" | "summary";
+export type LlmUsageOperation = "decision" | "response" | "summary";
+export type ChatPhase = "planning" | "running_tool" | "waiting_approval" | "responding";
 
 export type JsonValue =
   | string
@@ -25,6 +26,13 @@ export type ChatMessage = {
   content: string;
   meta: JsonRecord | null;
   createdAt: string;
+};
+
+export type ConversationListItem = {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type ToolCall = {
@@ -124,8 +132,8 @@ export type ProviderUsage = {
 
 export type ProviderDecision =
   | {
-      type: "message";
-      content: string;
+      type: "respond";
+      reason: string;
     }
   | ({
       type: "tool_call";
@@ -133,6 +141,11 @@ export type ProviderDecision =
 
 export type ProviderDecisionResult = {
   decision: ProviderDecision;
+  usage: ProviderUsage;
+};
+
+export type ProviderResponseResult = {
+  content: string;
   usage: ProviderUsage;
 };
 
@@ -166,7 +179,7 @@ export type HistoryPayload = {
 };
 
 export type ChatRouteStatus = "completed" | "approval_required" | "error";
-export type ApproveRouteStatus = "completed" | "denied" | "error";
+export type ApproveRouteStatus = "completed" | "approval_required" | "denied" | "error";
 
 export type ChatRouteResponse = HistoryPayload & {
   status: ChatRouteStatus;
@@ -179,3 +192,44 @@ export type ApproveRouteResponse = HistoryPayload & {
   toolExecution?: ToolTimelineRecord;
   error?: string;
 };
+
+export type ChatStreamEvent =
+  | {
+      type: "phase.changed";
+      phase: ChatPhase;
+      label: string;
+    }
+  | {
+      type: "tool.started";
+      toolExecution: ToolTimelineRecord;
+    }
+  | {
+      type: "tool.completed";
+      toolExecution: ToolTimelineRecord;
+    }
+  | {
+      type: "approval.required";
+      approval: ApprovalSummaryRecord;
+    }
+  | {
+      type: "assistant.delta";
+      delta: string;
+    }
+  | {
+      type: "assistant.completed";
+      message: ChatMessage;
+    }
+  | {
+      type: "usage.updated";
+      usage: ConversationUsageSummary;
+    }
+  | {
+      type: "turn.completed";
+      status: ChatRouteStatus | ApproveRouteStatus;
+      history: HistoryPayload;
+    }
+  | {
+      type: "turn.error";
+      error: string;
+      history: HistoryPayload | null;
+    };

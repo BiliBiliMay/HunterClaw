@@ -1,6 +1,11 @@
-import { getConfiguredProviderName } from "@/lib/llm/resolveProvider";
+import { Suspense } from "react";
+
 import { ChatApp } from "@/components/chat/chat-app";
 
 export default function HomePage() {
-  return <ChatApp providerName={getConfiguredProviderName()} />;
+  return (
+    <Suspense fallback={null}>
+      <ChatApp />
+    </Suspense>
+  );
 }

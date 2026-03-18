@@ -5,9 +5,5 @@ export async function planNextStep(
   provider: AgentProvider,
   context: ProviderContext,
 ): Promise<ProviderDecisionResult> {
-  if (provider.plan) {
-    return provider.plan(context);
-  }
-
-  return provider.generateResponse(context);
+  return provider.plan(context);
 }
