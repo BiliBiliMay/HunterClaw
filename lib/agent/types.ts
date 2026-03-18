@@ -108,6 +108,16 @@ export type ConversationUsageSummary = {
   lastTurn: UsageTotals | null;
 };
 
+export type ConversationSummary = {
+  id: string;
+  title: string;
+  preview: string | null;
+  createdAt: string | null;
+  lastActivityAt: string | null;
+  messageCount: number;
+  pendingApprovalCount: number;
+};
+
 export type LlmUsageEvent = {
   id: string;
   conversationId: string;

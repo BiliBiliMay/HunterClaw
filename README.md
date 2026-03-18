@@ -29,9 +29,10 @@ The app runs entirely on your machine for the MVP:
 ## What works
 
 - chat UI with inline messages, tool activity, and approval cards
+- multiple isolated conversations in both the web UI and the CLI
 - conversation token tracking with totals and latest-turn usage
 - terminal CLI for agent-style conversations
-- `POST /api/chat`, `POST /api/approve`, `GET /api/history`
+- `GET /api/conversations`, `POST /api/chat`, `POST /api/approve`, `GET /api/history`
 - SQLite persistence for messages, summaries, preferences, tool executions, and approvals
 - rolling summary memory for older messages
 - multi-step agent loop that can chain tool calls before answering
@@ -44,6 +45,7 @@ The app runs entirely on your machine for the MVP:
 
 ```text
 app/
+  api/conversations
   api/chat
   api/approve
   api/history
@@ -149,6 +151,7 @@ npm run dev
 Then open the local URL printed by Next.js, usually [http://localhost:3000](http://localhost:3000) or [http://localhost:3001](http://localhost:3001).
 
 The web UI shows:
+- a conversation list with new-thread creation and switching
 - user and assistant messages
 - compact tool executions without raw payload dumps
 - approval cards for medium/high-risk actions
@@ -173,6 +176,9 @@ This opens a simple REPL on top of the same agent loop and SQLite database used 
 Interactive CLI behavior:
 - type a normal request and press Enter
 - approvals are handled inline with `Approve? [y/n]`
+- `/conversations` lists existing threads
+- `/new` starts a fresh thread
+- `/switch <index|conversation-id>` changes the active thread
 - `/help` shows CLI help
 - `/exit` or `/quit` exits
 
@@ -186,7 +192,10 @@ Then:
 
 ```text
 > inspect this repo and explain the architecture
+> /new
 > find the bug in the agent loop and explain it
+> /conversations
+> /switch 1
 > update the README to better document the terminal workflow
 > look through the relevant files and tell me what needs approval before changing anything
 ```
@@ -194,7 +203,7 @@ Then:
 You can also run a single one-shot message:
 
 ```bash
-npm run agent:cli -- "inspect this repo and explain what kind of app it is"
+npm run agent:cli -- --conversation bugfix "inspect this repo and explain what kind of app it is"
 ```
 
 One-shot mode executes one turn and exits. If that turn requires approval, it stops at the approval boundary and tells you to use the interactive CLI or web UI.
@@ -214,7 +223,13 @@ Send a chat message:
 ```bash
 curl -X POST http://localhost:3000/api/chat \
   -H "Content-Type: application/json" \
-  -d '{"message":"inspect this repo and explain how the agent loop works"}'
+  -d '{"conversationId":"bugfix","message":"inspect this repo and explain how the agent loop works"}'
+```
+
+List conversations:
+
+```bash
+curl "http://localhost:3000/api/conversations"
 ```
 
 Load history:
@@ -293,6 +308,7 @@ The same SQLite state is shared across:
 - direct API calls
 
 That means a message sent in the terminal will appear in the web UI history, and vice versa.
+The same is true per conversation id, so the web UI, CLI, and HTTP API can all continue the same thread.
 
 ## Common workflows
 
@@ -374,7 +390,7 @@ That is now the default. `AGENT_FS_ROOT` still defaults to the repo root, which 
 
 ## Notes
 
-- This MVP uses a single conversation id: `default`.
+- Conversation ids are lightweight strings. The default thread id is `default`, and the CLI/web UI can create additional threads on demand.
 - There is no user auth system, multi-agent orchestration, or cloud dependency.
 - The browser session is process-local and ephemeral.
 - The API provider gives the closest experience to a Claude Code-style workflow.

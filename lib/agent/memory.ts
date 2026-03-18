@@ -6,7 +6,11 @@ import type {
   ApprovalSummaryRecord,
   ChatMessage,
   ChatRole,
+<<<<<<< HEAD
   ConversationListItem,
+=======
+  ConversationSummary,
+>>>>>>> 6622509 (feat: Add conversation management to the agent CLI with new commands and API routes.)
   ConversationUsageSummary,
   HistoryPayload,
   JsonRecord,
@@ -18,6 +22,7 @@ import type {
   ToolResult,
   UsageTotals,
 } from "@/lib/agent/types";
+import { DEFAULT_CONVERSATION_ID } from "@/lib/agent/types";
 import {
   toApprovalSummaryRecord,
   toToolTimelineRecord,
@@ -38,6 +43,8 @@ import { createId, nowIso, safeJsonParse, toJsonString } from "@/lib/utils";
 const SUMMARY_TRIGGER_COUNT = 12;
 const RECENT_RAW_MESSAGES = 8;
 const RECENT_TOOL_EXECUTIONS = 6;
+const CONVERSATION_TITLE_MAX_LENGTH = 48;
+const CONVERSATION_PREVIEW_MAX_LENGTH = 96;
 
 function createEmptyUsageTotals(): UsageTotals {
   return {
@@ -138,6 +145,7 @@ function aggregateUsage(rows: LlmUsageEvent[]): UsageTotals {
   return totals;
 }
 
+<<<<<<< HEAD
 function mapConversationRow(row: typeof conversations.$inferSelect): ConversationListItem {
   return {
     id: row.id,
@@ -239,6 +247,53 @@ export async function listConversations() {
     .all();
 
   return rows.map(mapConversationRow);
+=======
+function truncateInlineText(value: string, maxLength: number) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return null;
+  }
+
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+function createConversationSummarySeed(conversationId: string) {
+  return {
+    id: conversationId,
+    titleSeed: null as string | null,
+    titleFromUser: false,
+    preview: null as string | null,
+    createdAt: null as string | null,
+    lastActivityAt: null as string | null,
+    messageCount: 0,
+    pendingApprovalCount: 0,
+  };
+}
+
+function getConversationFallbackTitle(conversationId: string) {
+  if (conversationId === DEFAULT_CONVERSATION_ID) {
+    return "Default conversation";
+  }
+
+  return `Conversation ${conversationId.slice(0, 8)}`;
+}
+
+function touchConversationActivity(
+  conversation: ReturnType<typeof createConversationSummarySeed>,
+  timestamp: string,
+) {
+  if (!conversation.createdAt || timestamp < conversation.createdAt) {
+    conversation.createdAt = timestamp;
+  }
+
+  if (!conversation.lastActivityAt || timestamp > conversation.lastActivityAt) {
+    conversation.lastActivityAt = timestamp;
+  }
+>>>>>>> 6622509 (feat: Add conversation management to the agent CLI with new commands and API routes.)
 }
 
 export async function insertMessage({
@@ -691,6 +746,94 @@ export async function getHistoryPayload(conversationId: string): Promise<History
     pendingApprovals: rawApprovals.map(toApprovalSummaryRecord),
     usage,
   };
+}
+
+export async function listConversations(): Promise<ConversationSummary[]> {
+  const messageRows = db
+    .select()
+    .from(messages)
+    .orderBy(asc(messages.createdAt))
+    .all();
+  const toolRows = db
+    .select()
+    .from(toolExecutions)
+    .orderBy(asc(toolExecutions.createdAt))
+    .all();
+  const approvalRows = db
+    .select()
+    .from(approvalRequests)
+    .orderBy(asc(approvalRequests.createdAt))
+    .all();
+
+  const conversations = new Map<string, ReturnType<typeof createConversationSummarySeed>>();
+
+  const getConversation = (conversationId: string) => {
+    let conversation = conversations.get(conversationId);
+    if (!conversation) {
+      conversation = createConversationSummarySeed(conversationId);
+      conversations.set(conversationId, conversation);
+    }
+
+    return conversation;
+  };
+
+  for (const row of messageRows) {
+    const conversation = getConversation(row.conversationId);
+    conversation.messageCount += 1;
+    touchConversationActivity(conversation, row.createdAt);
+
+    const truncatedContent = truncateInlineText(row.content, CONVERSATION_PREVIEW_MAX_LENGTH);
+    if (truncatedContent) {
+      conversation.preview = truncatedContent;
+      const titleCandidate = truncateInlineText(row.content, CONVERSATION_TITLE_MAX_LENGTH);
+      if (titleCandidate) {
+        if (row.role === "user" && !conversation.titleFromUser) {
+          conversation.titleSeed = titleCandidate;
+          conversation.titleFromUser = true;
+        } else if (!conversation.titleSeed) {
+          conversation.titleSeed = titleCandidate;
+        }
+      }
+    }
+  }
+
+  for (const row of toolRows) {
+    const conversation = getConversation(row.conversationId);
+    touchConversationActivity(conversation, row.createdAt);
+  }
+
+  for (const row of approvalRows) {
+    const conversation = getConversation(row.conversationId);
+    touchConversationActivity(conversation, row.createdAt);
+    if (row.status === "pending") {
+      conversation.pendingApprovalCount += 1;
+    }
+  }
+
+  if (!conversations.has(DEFAULT_CONVERSATION_ID)) {
+    conversations.set(DEFAULT_CONVERSATION_ID, createConversationSummarySeed(DEFAULT_CONVERSATION_ID));
+  }
+
+  return [...conversations.values()]
+    .map((conversation) => ({
+      id: conversation.id,
+      title: conversation.titleSeed ?? getConversationFallbackTitle(conversation.id),
+      preview: conversation.preview,
+      createdAt: conversation.createdAt,
+      lastActivityAt: conversation.lastActivityAt,
+      messageCount: conversation.messageCount,
+      pendingApprovalCount: conversation.pendingApprovalCount,
+    }))
+    .sort((left, right) => {
+      const leftTimestamp = left.lastActivityAt ?? left.createdAt ?? "";
+      const rightTimestamp = right.lastActivityAt ?? right.createdAt ?? "";
+
+      if (leftTimestamp !== rightTimestamp) {
+        return rightTimestamp.localeCompare(leftTimestamp);
+      }
+
+      return left.title.localeCompare(right.title);
+    });
 }
 
 export async function getPreference(key: string) {

@@ -1,5 +1,6 @@
 "use client";
 
+<<<<<<< HEAD
 import {
   FormEvent,
   startTransition,
@@ -9,22 +10,34 @@ import {
   useState,
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+=======
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+>>>>>>> 6622509 (feat: Add conversation management to the agent CLI with new commands and API routes.)
 
 import type {
   ApprovalSummaryRecord,
   ChatMessage,
+<<<<<<< HEAD
   ChatPhase,
   ChatStreamEvent,
   ConversationListItem,
+=======
+  ChatRouteResponse,
+  ConversationSummary,
+>>>>>>> 6622509 (feat: Add conversation management to the agent CLI with new commands and API routes.)
   ConversationUsageSummary,
   HistoryPayload,
   ToolTimelineRecord,
   UsageTotals,
 } from "@/lib/agent/types";
+<<<<<<< HEAD
 import {
   consumeNdjsonStream,
   fetchJsonOrTextError,
 } from "@/lib/chat/clientTransport";
+=======
+import { DEFAULT_CONVERSATION_ID } from "@/lib/agent/types";
+>>>>>>> 6622509 (feat: Add conversation management to the agent CLI with new commands and API routes.)
 
 type TimelineEntry =
   | { type: "message"; createdAt: string; message: ChatMessage; streaming?: boolean }
@@ -39,6 +52,13 @@ type CreateConversationPayload = {
   conversation: ConversationListItem;
 };
 
+type ConversationsRouteResponse = {
+  conversations: ConversationSummary[];
+  error?: string;
+};
+
+const ACTIVE_CONVERSATION_STORAGE_KEY = "hunterclaw.activeConversationId";
+const NEW_CONVERSATION_TITLE = "New conversation";
 const emptyUsageTotals: UsageTotals = {
   inputTokens: 0,
   outputTokens: 0,
@@ -70,6 +90,7 @@ function formatNumber(value: number) {
   return value.toLocaleString();
 }
 
+<<<<<<< HEAD
 function formatConversationDate(value: string) {
   try {
     return new Intl.DateTimeFormat(undefined, {
@@ -114,6 +135,91 @@ function buildOptimisticUserMessage(message: string, conversationId: string): Ch
     content: message,
     meta: null,
     createdAt: new Date().toISOString(),
+=======
+function truncateText(value: string, maxLength: number) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return null;
+  }
+
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+function createConversationId() {
+  return `conv_${globalThis.crypto.randomUUID()}`;
+}
+
+function formatConversationTimestamp(value: string | null) {
+  if (!value) {
+    return "No activity yet";
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function buildConversationFallback(
+  conversationId: string,
+  history: HistoryPayload,
+): ConversationSummary {
+  const firstUserMessage = history.messages.find((message) => message.role === "user");
+  const latestMessage = [...history.messages].reverse().find((message) => message.content.trim());
+  const timestamps = [
+    ...history.messages.map((message) => message.createdAt),
+    ...history.toolExecutions.map((toolExecution) => toolExecution.createdAt),
+    ...history.pendingApprovals.map((approval) => approval.createdAt),
+  ].sort((left, right) => left.localeCompare(right));
+
+  return {
+    id: conversationId,
+    title:
+      truncateText(
+        firstUserMessage?.content ??
+          (conversationId === DEFAULT_CONVERSATION_ID ? "Default conversation" : NEW_CONVERSATION_TITLE),
+        48,
+      ) ??
+      (conversationId === DEFAULT_CONVERSATION_ID ? "Default conversation" : NEW_CONVERSATION_TITLE),
+    preview: truncateText(latestMessage?.content ?? "", 96),
+    createdAt: timestamps[0] ?? null,
+    lastActivityAt: timestamps[timestamps.length - 1] ?? null,
+    messageCount: history.messages.length,
+    pendingApprovalCount: history.pendingApprovals.length,
+  };
+}
+
+function mergeConversations(
+  conversations: ConversationSummary[],
+  activeConversationId: string,
+  history: HistoryPayload,
+) {
+  if (conversations.some((conversation) => conversation.id === activeConversationId)) {
+    return conversations;
+  }
+
+  return [buildConversationFallback(activeConversationId, history), ...conversations];
+}
+
+function StatusPill({
+  label,
+  tone,
+}: {
+  label: string;
+  tone: "neutral" | "success" | "warning" | "danger";
+}) {
+  const toneClasses = {
+    neutral: "bg-white/80 text-slate-700 border border-slate-200",
+    success: "bg-emerald-50 text-emerald-700 border border-emerald-200",
+    warning: "bg-amber-50 text-amber-800 border border-amber-200",
+    danger: "bg-rose-50 text-rose-700 border border-rose-200",
+>>>>>>> 6622509 (feat: Add conversation management to the agent CLI with new commands and API routes.)
   };
 }
 
@@ -202,6 +308,7 @@ function TokenPill({ totalTokens }: { totalTokens: number }) {
   );
 }
 
+<<<<<<< HEAD
 function MessageBubble({
   message,
   streaming,
@@ -305,11 +412,77 @@ function ApprovalNotice({
             Deny
           </button>
         </div>
+=======
+function ConversationList({
+  conversations,
+  activeConversationId,
+  isBusy,
+  onCreate,
+  onSelect,
+}: {
+  conversations: ConversationSummary[];
+  activeConversationId: string;
+  isBusy: boolean;
+  onCreate: () => void;
+  onSelect: (conversationId: string) => void;
+}) {
+  return (
+    <div className="mt-6">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-[11px] uppercase tracking-[0.26em] text-slate-400">Conversations</p>
+        <button
+          className="rounded-full border border-sky-300/30 bg-sky-400/15 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.18em] text-sky-100 transition hover:bg-sky-400/25 disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={isBusy}
+          onClick={onCreate}
+          type="button"
+        >
+          New
+        </button>
+      </div>
+
+      <div className="mt-3 max-h-[22rem] space-y-2 overflow-y-auto pr-1">
+        {conversations.map((conversation) => {
+          const isActive = conversation.id === activeConversationId;
+
+          return (
+            <button
+              className={`w-full rounded-[1.4rem] border px-4 py-3 text-left transition ${
+                isActive
+                  ? "border-sky-300/40 bg-sky-400/15 text-white"
+                  : "border-white/10 bg-white/5 text-slate-200 hover:border-white/20 hover:bg-white/10"
+              }`}
+              disabled={isBusy}
+              key={conversation.id}
+              onClick={() => onSelect(conversation.id)}
+              type="button"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold">{conversation.title}</p>
+                  <p className={`mt-1 text-xs ${isActive ? "text-sky-100/85" : "text-slate-400"}`}>
+                    {conversation.preview ?? "No messages yet"}
+                  </p>
+                </div>
+                {conversation.pendingApprovalCount > 0 ? (
+                  <span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-amber-900">
+                    {conversation.pendingApprovalCount}
+                  </span>
+                ) : null}
+              </div>
+              <div className={`mt-3 flex items-center justify-between text-[11px] uppercase tracking-[0.18em] ${isActive ? "text-sky-100/75" : "text-slate-500"}`}>
+                <span>{conversation.messageCount} message{conversation.messageCount === 1 ? "" : "s"}</span>
+                <span>{formatConversationTimestamp(conversation.lastActivityAt)}</span>
+              </div>
+            </button>
+          );
+        })}
+>>>>>>> 6622509 (feat: Add conversation management to the agent CLI with new commands and API routes.)
       </div>
     </div>
   );
 }
 
+<<<<<<< HEAD
 function LiveStatusRow({
   phase,
 }: {
@@ -356,8 +529,14 @@ export function ChatApp() {
 
   const [conversations, setConversations] = useState<ConversationListItem[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(requestedConversationId);
+=======
+export function ChatApp({ providerName }: { providerName: string }) {
+>>>>>>> 6622509 (feat: Add conversation management to the agent CLI with new commands and API routes.)
   const [history, setHistory] = useState<HistoryPayload>(defaultHistory);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState(DEFAULT_CONVERSATION_ID);
   const [message, setMessage] = useState("");
+<<<<<<< HEAD
   const [error, setError] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
@@ -373,6 +552,25 @@ export function ChatApp() {
   const selectedConversation = conversations.find((conversation) => conversation.id === activeConversationId) ?? null;
   const displayedUsage = liveUsage ?? history.usage;
   const pendingApprovalCount = getPendingApprovalCount(history, liveApprovals);
+=======
+  const [isReady, setIsReady] = useState(false);
+  const [isLoadingConversation, setIsLoadingConversation] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const loadSequenceRef = useRef(0);
+  const activeConversationIdRef = useRef(activeConversationId);
+
+  useEffect(() => {
+    activeConversationIdRef.current = activeConversationId;
+  }, [activeConversationId]);
+
+  async function fetchHistory(conversationId: string) {
+    const response = await fetch(`/api/history?conversationId=${encodeURIComponent(conversationId)}`, {
+      cache: "no-store",
+    });
+    const payload = (await response.json()) as HistoryPayload & { error?: string };
+>>>>>>> 6622509 (feat: Add conversation management to the agent CLI with new commands and API routes.)
 
   useEffect(() => {
     activeConversationIdRef.current = activeConversationId;
@@ -406,6 +604,7 @@ export function ChatApp() {
       return;
     }
 
+<<<<<<< HEAD
     abortActiveStream();
     setError(null);
     setHistory(defaultHistory);
@@ -749,6 +948,79 @@ export function ChatApp() {
         }
       : null;
 
+=======
+    return payload;
+  }
+
+  async function fetchConversations() {
+    const response = await fetch("/api/conversations", {
+      cache: "no-store",
+    });
+    const payload = (await response.json()) as ConversationsRouteResponse;
+
+    if (!response.ok) {
+      throw new Error(payload.error ?? "Failed to load conversations.");
+    }
+
+    return payload.conversations;
+  }
+
+  useEffect(() => {
+    const storedConversationId = window.localStorage.getItem(ACTIVE_CONVERSATION_STORAGE_KEY)?.trim();
+    if (storedConversationId) {
+      setActiveConversationId(storedConversationId);
+    }
+
+    setIsReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isReady) {
+      return;
+    }
+
+    window.localStorage.setItem(ACTIVE_CONVERSATION_STORAGE_KEY, activeConversationId);
+
+    const requestId = loadSequenceRef.current + 1;
+    loadSequenceRef.current = requestId;
+    setIsLoadingConversation(true);
+    setError(null);
+
+    void Promise.all([fetchConversations(), fetchHistory(activeConversationId)])
+      .then(([loadedConversations, loadedHistory]) => {
+        if (loadSequenceRef.current !== requestId) {
+          return;
+        }
+
+        setConversations(loadedConversations);
+        setHistory(loadedHistory);
+      })
+      .catch((loadError) => {
+        if (loadSequenceRef.current !== requestId) {
+          return;
+        }
+
+        setHistory(defaultHistory);
+        setError(loadError instanceof Error ? loadError.message : "Unexpected error.");
+      })
+      .finally(() => {
+        if (loadSequenceRef.current === requestId) {
+          setIsLoadingConversation(false);
+        }
+      });
+  }, [activeConversationId, isReady]);
+
+  const visibleConversations = useMemo(() => {
+    return mergeConversations(conversations, activeConversationId, history);
+  }, [activeConversationId, conversations, history]);
+
+  const activeConversation = useMemo(() => {
+    return visibleConversations.find((conversation) => conversation.id === activeConversationId)
+      ?? buildConversationFallback(activeConversationId, history);
+  }, [activeConversationId, history, visibleConversations]);
+
+  const entries = useMemo(() => {
+>>>>>>> 6622509 (feat: Add conversation management to the agent CLI with new commands and API routes.)
     return [
       ...history.messages.map((item) => ({
         type: "message" as const,
@@ -786,6 +1058,7 @@ export function ChatApp() {
     ].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }, [activeConversationId, history, liveApprovals, liveAssistant, liveTools, optimisticMessages]);
 
+<<<<<<< HEAD
   const liveStatus = useMemo(() => {
     if (!livePhase) {
       return null;
@@ -793,11 +1066,83 @@ export function ChatApp() {
 
     if (liveAssistant || liveTools.some((tool) => tool.status === "running") || liveApprovals.length > 0) {
       return null;
+=======
+  const isBusy = isSubmitting || actionLoadingId !== null;
+
+  function handleCreateConversation() {
+    setError(null);
+    setMessage("");
+    setHistory(defaultHistory);
+    setActiveConversationId(createConversationId());
+  }
+
+  function handleSelectConversation(conversationId: string) {
+    if (conversationId === activeConversationId) {
+      return;
+    }
+
+    setError(null);
+    setMessage("");
+    setHistory(defaultHistory);
+    setActiveConversationId(conversationId);
+  }
+
+  async function refreshConversationSummaries() {
+    const loadedConversations = await fetchConversations();
+    setConversations(loadedConversations);
+    return loadedConversations;
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    const trimmedMessage = message.trim();
+    if (!trimmedMessage) {
+      return;
+    }
+
+    const conversationId = activeConversationIdRef.current;
+
+    setIsSubmitting(true);
+    setError(null);
+
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ message: trimmedMessage, conversationId }),
+      });
+
+      const payload = (await response.json()) as ChatRouteResponse | { error: string };
+
+      if (!response.ok || hasError(payload)) {
+        throw new Error(hasError(payload) ? payload.error : "Failed to send message.");
+      }
+
+      if (activeConversationIdRef.current === conversationId) {
+        setHistory({
+          messages: payload.messages,
+          toolExecutions: payload.toolExecutions,
+          pendingApprovals: payload.pendingApprovals,
+          usage: payload.usage,
+        });
+        setMessage("");
+      }
+
+      await refreshConversationSummaries();
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "Unexpected error.");
+    } finally {
+      setIsSubmitting(false);
+>>>>>>> 6622509 (feat: Add conversation management to the agent CLI with new commands and API routes.)
     }
 
     return livePhase;
   }, [liveApprovals.length, liveAssistant, livePhase, liveTools]);
 
+<<<<<<< HEAD
   const isComposerDisabled = isInitializing || isLoadingHistory || isSubmitting || Boolean(actionLoadingId) || !activeConversationId;
   const composerHint = isInitializing
     ? "Preparing session..."
@@ -833,6 +1178,102 @@ export function ChatApp() {
 
               <div className="text-right text-sm text-[var(--hc-muted)]">
                 {pendingApprovalCount > 0 ? `${pendingApprovalCount} approval${pendingApprovalCount === 1 ? "" : "s"} waiting` : "Ready"}
+=======
+    try {
+      const response = await fetch("/api/approve", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ requestId, decision }),
+      });
+
+      const payload = (await response.json()) as ApproveRouteResponse | { error: string };
+
+      if (!response.ok || hasError(payload)) {
+        throw new Error(hasError(payload) ? payload.error : "Approval request failed.");
+      }
+
+      setHistory({
+        messages: payload.messages,
+        toolExecutions: payload.toolExecutions,
+        pendingApprovals: payload.pendingApprovals,
+        usage: payload.usage,
+      });
+
+      await refreshConversationSummaries();
+    } catch (decisionError) {
+      setError(decisionError instanceof Error ? decisionError.message : "Unexpected error.");
+    } finally {
+      setActionLoadingId(null);
+    }
+  }
+
+  return (
+    <main className="min-h-screen px-4 py-6 sm:px-6 lg:px-8">
+      <div className="mx-auto grid max-w-7xl gap-6 lg:grid-cols-[330px_minmax(0,1fr)]">
+        <aside className="h-fit rounded-[2rem] border border-white/10 bg-[var(--hc-ink)] px-6 py-7 text-white shadow-panel lg:sticky lg:top-6">
+          <p className="text-xs uppercase tracking-[0.34em] text-sky-300">HunterClaw</p>
+          <h1 className="mt-4 text-3xl font-semibold tracking-tight">Operator Desk</h1>
+          <p className="mt-4 text-sm leading-6 text-slate-300">
+            Local-first coding agent with compact activity tracking, approval boundaries, and isolated conversation threads.
+          </p>
+
+          <ConversationList
+            activeConversationId={activeConversationId}
+            conversations={visibleConversations}
+            isBusy={isBusy}
+            onCreate={handleCreateConversation}
+            onSelect={handleSelectConversation}
+          />
+
+          <div className="mt-6 rounded-[1.5rem] border border-white/10 bg-white/5 px-4 py-4">
+            <p className="text-[11px] uppercase tracking-[0.22em] text-slate-400">Active provider</p>
+            <p className="mt-2 text-lg font-semibold text-white">{providerName}</p>
+          </div>
+
+          <div className="mt-6 space-y-4">
+            <UsageCard prominent title="Conversation tokens" usage={history.usage.totals} />
+            <UsageCard title="Last turn" usage={history.usage.lastTurn} />
+          </div>
+
+          <div className="mt-6 space-y-3 text-sm text-slate-200">
+            <div className="rounded-[1.4rem] border border-white/10 bg-white/5 px-4 py-3">
+              Tool activity is visible inline, but raw args and results stay in the backend backlog.
+            </div>
+            <div className="rounded-[1.4rem] border border-white/10 bg-white/5 px-4 py-3">
+              Each thread keeps its own message history, approvals, and token usage totals.
+            </div>
+            <div className="rounded-[1.4rem] border border-white/10 bg-white/5 px-4 py-3">
+              The agent can inspect the repo on its own and will pause only for risky actions.
+            </div>
+          </div>
+        </aside>
+
+        <section className="flex min-h-[84vh] flex-col overflow-hidden rounded-[2rem] border border-[var(--hc-border)] bg-[var(--hc-surface)] shadow-panel">
+          <div className="border-b border-[var(--hc-border)] px-6 py-5">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <p className="text-[11px] uppercase tracking-[0.28em] text-[var(--hc-muted)]">Live conversation</p>
+                <h2 className="mt-2 text-2xl font-semibold tracking-tight text-[var(--hc-text)]">{activeConversation.title}</h2>
+                <p className="mt-2 text-sm text-[var(--hc-muted)]">
+                  {activeConversation.messageCount} message{activeConversation.messageCount === 1 ? "" : "s"} in this thread
+                  {" · "}
+                  {formatConversationTimestamp(activeConversation.lastActivityAt)}
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                {isLoadingConversation ? (
+                  <div className="rounded-full border border-sky-200 bg-sky-50 px-4 py-2 text-sm text-sky-700">
+                    Loading conversation...
+                  </div>
+                ) : null}
+                <div className="rounded-full border border-[var(--hc-border)] bg-[var(--hc-panel-soft)] px-4 py-2 text-sm text-[var(--hc-muted)]">
+                  {history.pendingApprovals.length > 0
+                    ? `${history.pendingApprovals.length} approval${history.pendingApprovals.length === 1 ? "" : "s"} waiting`
+                    : "No pending approvals"}
+                </div>
+>>>>>>> 6622509 (feat: Add conversation management to the agent CLI with new commands and API routes.)
               </div>
             </div>
           </header>
