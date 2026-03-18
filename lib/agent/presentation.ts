@@ -36,7 +36,8 @@ export function summarizeToolCall(toolName: string, args: unknown) {
   }
 
   if (toolName === "shellTool") {
-    return "Running a shell command in the project";
+    const command = asString(parsedArgs?.command);
+    return command ? `Running ${command}` : "Running a shell command in the project";
   }
 
   if (toolName === "browserTool") {

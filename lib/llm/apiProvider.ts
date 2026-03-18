@@ -5,22 +5,24 @@ import type {
   ChatMessage,
   ProviderDecision,
   ProviderDecisionResult,
-  ToolExecutionRecord,
   ProviderContext,
+  ProviderResponseResult,
   ProviderSummaryResult,
   ProviderUsage,
+  ToolExecutionRecord,
 } from "@/lib/agent/types";
 import { AGENT_FS_ROOT } from "@/lib/db/client";
 import type { AgentProvider, SummaryContext } from "@/lib/llm/provider";
 import {
   buildApiDecisionPrompt,
+  buildApiResponsePrompt,
   buildApiSummaryPrompt,
 } from "@/lib/llm/prompts";
 
 const decisionSchema = z.discriminatedUnion("type", [
   z.object({
-    type: z.literal("message"),
-    content: z.string().min(1),
+    type: z.literal("respond"),
+    reason: z.string().min(1),
   }),
   z.object({
     type: z.literal("tool_call"),
@@ -246,15 +248,15 @@ function normalizeDecision(value: unknown, depth = 0): ProviderDecision | null {
         return normalizeDecision(JSON.parse(trimmed), depth + 1);
       } catch {
         return {
-          type: "message",
-          content: trimmed,
+          type: "respond",
+          reason: "Ready to answer without another tool.",
         };
       }
     }
 
     return {
-      type: "message",
-      content: trimmed,
+      type: "respond",
+      reason: "Ready to answer without another tool.",
     };
   }
 
@@ -269,8 +271,8 @@ function normalizeDecision(value: unknown, depth = 0): ProviderDecision | null {
     const textContent = extractText(value, depth + 1);
     return textContent
       ? {
-          type: "message",
-          content: textContent,
+          type: "respond",
+          reason: "Ready to answer without another tool.",
         }
       : null;
   }
@@ -317,8 +319,8 @@ function normalizeDecision(value: unknown, depth = 0): ProviderDecision | null {
     );
     if (content) {
       return {
-        type: "message",
-        content,
+        type: "respond",
+        reason: "Ready to answer without another tool.",
       };
     }
   }
@@ -350,8 +352,8 @@ function normalizeDecision(value: unknown, depth = 0): ProviderDecision | null {
   );
   if (content) {
     return {
-      type: "message",
-      content,
+      type: "respond",
+      reason: "Ready to answer without another tool.",
     };
   }
 
@@ -410,14 +412,50 @@ async function createTextResponse(input: string, operation: ProviderUsage["opera
   });
 
   return {
-    text: response.output_text?.trim() ?? "",
+    text: response.output_text ?? "",
     usage: buildUsage(operation, modelName, response.usage),
+  };
+}
+
+async function createStreamingTextResponse(
+  input: string,
+  operation: ProviderUsage["operation"],
+  onDelta: (delta: string) => void | Promise<void>,
+): Promise<ProviderResponseResult> {
+  const client = getApiClient();
+  const modelName = getApiModel();
+  const stream = await client.responses.create({
+    model: modelName,
+    input,
+    stream: true,
+  });
+
+  let streamedText = "";
+  let usage = buildUsage(operation, modelName, null);
+
+  for await (const event of stream) {
+    if (event.type === "response.output_text.delta" && event.delta) {
+      streamedText += event.delta;
+      await onDelta(event.delta);
+    }
+
+    if (event.type === "response.completed") {
+      return {
+        content: event.response.output_text ?? streamedText,
+        usage: buildUsage(operation, modelName, event.response.usage),
+      };
+    }
+  }
+
+  return {
+    content: streamedText,
+    usage,
   };
 }
 
 export const apiProvider: AgentProvider = {
   name: "api",
-  async generateResponse(context: ProviderContext): Promise<ProviderDecisionResult> {
+  async plan(context: ProviderContext): Promise<ProviderDecisionResult> {
     const response = await createTextResponse(
       buildApiDecisionPrompt({
         modelName: getApiModel(),
@@ -437,8 +475,39 @@ export const apiProvider: AgentProvider = {
       usage: response.usage,
     };
   },
-  async plan(context: ProviderContext) {
-    return apiProvider.generateResponse(context);
+  async respond(context: ProviderContext): Promise<ProviderResponseResult> {
+    const response = await createTextResponse(
+      buildApiResponsePrompt({
+        modelName: getApiModel(),
+        workspaceRoot: AGENT_FS_ROOT,
+        summary: context.summary,
+        latestUserMessage: context.latestUserMessage,
+        recentMessages: formatRecentMessages(context.recentMessages),
+        recentToolExecutions: formatRecentToolExecutions(context.recentToolExecutions),
+        lastToolResult: context.lastToolResult ? JSON.stringify(context.lastToolResult, null, 2) : null,
+      }),
+      "response",
+    );
+
+    return {
+      content: response.text,
+      usage: response.usage,
+    };
+  },
+  async streamResponse(context: ProviderContext, onDelta) {
+    return createStreamingTextResponse(
+      buildApiResponsePrompt({
+        modelName: getApiModel(),
+        workspaceRoot: AGENT_FS_ROOT,
+        summary: context.summary,
+        latestUserMessage: context.latestUserMessage,
+        recentMessages: formatRecentMessages(context.recentMessages),
+        recentToolExecutions: formatRecentToolExecutions(context.recentToolExecutions),
+        lastToolResult: context.lastToolResult ? JSON.stringify(context.lastToolResult, null, 2) : null,
+      }),
+      "response",
+      onDelta,
+    );
   },
   async summarize(context: SummaryContext): Promise<ProviderSummaryResult> {
     const response = await createTextResponse(

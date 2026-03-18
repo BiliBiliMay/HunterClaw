@@ -1,10 +1,12 @@
 import { asc, desc, eq } from "drizzle-orm";
 
+import { deriveConversationTitle, NEW_CHAT_TITLE } from "@/lib/agent/conversations";
 import type {
   ApprovalRequestRecord,
   ApprovalSummaryRecord,
   ChatMessage,
   ChatRole,
+  ConversationListItem,
   ConversationUsageSummary,
   HistoryPayload,
   JsonRecord,
@@ -23,6 +25,7 @@ import {
 import { db } from "@/lib/db/client";
 import {
   approvalRequests,
+  conversations,
   llmUsageEvents,
   messages,
   preferences,
@@ -135,6 +138,109 @@ function aggregateUsage(rows: LlmUsageEvent[]): UsageTotals {
   return totals;
 }
 
+function mapConversationRow(row: typeof conversations.$inferSelect): ConversationListItem {
+  return {
+    id: row.id,
+    title: row.title,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+async function ensureConversationRecord(
+  conversationId: string,
+  createdAt: string = nowIso(),
+) {
+  db.insert(conversations)
+    .values({
+      id: conversationId,
+      title: NEW_CHAT_TITLE,
+      createdAt,
+      updatedAt: createdAt,
+    })
+    .onConflictDoNothing()
+    .run();
+}
+
+async function touchConversation(conversationId: string, updatedAt: string = nowIso()) {
+  await ensureConversationRecord(conversationId, updatedAt);
+
+  db.update(conversations)
+    .set({
+      updatedAt,
+    })
+    .where(eq(conversations.id, conversationId))
+    .run();
+}
+
+async function maybeUpdateConversationTitleFromFirstUserMessage(
+  conversationId: string,
+  content: string,
+  updatedAt: string,
+) {
+  const conversation = db
+    .select()
+    .from(conversations)
+    .where(eq(conversations.id, conversationId))
+    .limit(1)
+    .all()[0];
+
+  if (!conversation || conversation.title !== NEW_CHAT_TITLE) {
+    return;
+  }
+
+  const userMessages = db
+    .select()
+    .from(messages)
+    .where(eq(messages.conversationId, conversationId))
+    .orderBy(asc(messages.createdAt))
+    .all()
+    .filter((message) => message.role === "user");
+
+  if (userMessages.length !== 1) {
+    return;
+  }
+
+  db.update(conversations)
+    .set({
+      title: deriveConversationTitle(content),
+      updatedAt,
+    })
+    .where(eq(conversations.id, conversationId))
+    .run();
+}
+
+export async function createConversation() {
+  const createdAt = nowIso();
+  const conversation: ConversationListItem = {
+    id: createId("conversation"),
+    title: NEW_CHAT_TITLE,
+    createdAt,
+    updatedAt: createdAt,
+  };
+
+  db.insert(conversations)
+    .values({
+      id: conversation.id,
+      title: conversation.title,
+      createdAt: conversation.createdAt,
+      updatedAt: conversation.updatedAt,
+    })
+    .run();
+
+  return conversation;
+}
+
+export async function listConversations() {
+  const rows = db
+    .select()
+    .from(conversations)
+    .orderBy(desc(conversations.updatedAt), desc(conversations.createdAt))
+    .all();
+
+  return rows.map(mapConversationRow);
+}
+
 export async function insertMessage({
   conversationId,
   role,
@@ -158,6 +264,8 @@ export async function insertMessage({
     createdAt: nowIso(),
   };
 
+  await ensureConversationRecord(conversationId, message.createdAt);
+
   db.insert(messages)
     .values({
       id: message.id,
@@ -169,6 +277,16 @@ export async function insertMessage({
       createdAt: message.createdAt,
     })
     .run();
+
+  await touchConversation(conversationId, message.createdAt);
+
+  if (role === "user") {
+    await maybeUpdateConversationTitleFromFirstUserMessage(
+      conversationId,
+      content,
+      message.createdAt,
+    );
+  }
 
   return message;
 }
@@ -260,6 +378,8 @@ export async function logLlmUsageEvent({
     totalTokens: usage.totalTokens,
     createdAt: nowIso(),
   };
+
+  await ensureConversationRecord(conversationId, event.createdAt);
 
   db.insert(llmUsageEvents)
     .values({
@@ -378,6 +498,8 @@ export async function createApprovalRequest({
     resolvedAt: null,
   };
 
+  await ensureConversationRecord(conversationId, approvalRequest.createdAt);
+
   db.insert(approvalRequests)
     .values({
       id: approvalRequest.id,
@@ -455,6 +577,8 @@ export async function logToolExecutionStart({
     finishedAt: null,
   };
 
+  await ensureConversationRecord(conversationId, execution.createdAt);
+
   db.insert(toolExecutions)
     .values({
       id: execution.id,
@@ -499,10 +623,10 @@ export async function finishToolExecution(
   return row ? mapToolExecutionRow(row) : null;
 }
 
-async function getConversationUsageSummary(
+async function buildConversationUsageSummary(
   conversationId: string,
   mappedMessages: ChatMessage[],
-): Promise<ConversationUsageSummary> {
+) {
   const usageRows = db
     .select()
     .from(llmUsageEvents)
@@ -520,6 +644,20 @@ async function getConversationUsageSummary(
     totals: aggregateUsage(usageRows),
     lastTurn: latestUserMessage ? aggregateUsage(lastTurnUsageRows) : null,
   };
+}
+
+export async function getConversationUsageSummary(
+  conversationId: string,
+): Promise<ConversationUsageSummary> {
+  const mappedMessages = db
+    .select()
+    .from(messages)
+    .where(eq(messages.conversationId, conversationId))
+    .orderBy(asc(messages.createdAt))
+    .all()
+    .map(mapMessageRow);
+
+  return buildConversationUsageSummary(conversationId, mappedMessages);
 }
 
 export async function getHistoryPayload(conversationId: string): Promise<HistoryPayload> {
@@ -545,7 +683,7 @@ export async function getHistoryPayload(conversationId: string): Promise<History
   const mappedMessages = messageRows.map(mapMessageRow);
   const rawToolExecutions = toolRows.map(mapToolExecutionRow);
   const rawApprovals = approvalRows.map(mapApprovalRow);
-  const usage = await getConversationUsageSummary(conversationId, mappedMessages);
+  const usage = await buildConversationUsageSummary(conversationId, mappedMessages);
 
   return {
     messages: mappedMessages,

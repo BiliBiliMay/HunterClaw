@@ -2,6 +2,7 @@ import type {
   ChatMessage,
   ProviderContext,
   ProviderDecisionResult,
+  ProviderResponseResult,
   ProviderSummaryResult,
 } from "@/lib/agent/types";
 
@@ -13,7 +14,11 @@ export type SummaryContext = {
 
 export interface AgentProvider {
   name: string;
-  generateResponse(context: ProviderContext): Promise<ProviderDecisionResult>;
-  plan?(context: ProviderContext): Promise<ProviderDecisionResult>;
+  plan(context: ProviderContext): Promise<ProviderDecisionResult>;
+  respond(context: ProviderContext): Promise<ProviderResponseResult>;
+  streamResponse?(
+    context: ProviderContext,
+    onDelta: (delta: string) => void | Promise<void>,
+  ): Promise<ProviderResponseResult>;
   summarize?(context: SummaryContext): Promise<ProviderSummaryResult>;
 }

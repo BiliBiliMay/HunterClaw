@@ -1,8 +1,9 @@
 import { z } from "zod";
 
-import { runAgentTurn } from "@/lib/agent/loop";
+import { streamAgentTurn } from "@/lib/agent/loop";
+import { createNdjsonStreamResponse } from "@/lib/agent/streaming";
 import { DEFAULT_CONVERSATION_ID } from "@/lib/agent/types";
-import { jsonDataResponse, jsonErrorResponse } from "@/lib/server/apiResponses";
+import { jsonErrorResponse } from "@/lib/server/apiResponses";
 
 export const runtime = "nodejs";
 
@@ -14,16 +15,22 @@ const requestSchema = z.object({
 export async function POST(request: Request) {
   try {
     const body = requestSchema.parse(await request.json());
-    const response = await runAgentTurn({
-      message: body.message,
+
+    console.info("[api/chat/stream] request accepted", {
       conversationId: body.conversationId ?? DEFAULT_CONVERSATION_ID,
     });
 
-    return jsonDataResponse(response);
+    return createNdjsonStreamResponse("api/chat/stream", async (send) => {
+      await streamAgentTurn({
+        message: body.message,
+        conversationId: body.conversationId ?? DEFAULT_CONVERSATION_ID,
+        onEvent: send,
+      });
+    });
   } catch (error) {
     return jsonErrorResponse({
       error,
-      context: "api/chat",
+      context: "api/chat/stream",
     });
   }
 }

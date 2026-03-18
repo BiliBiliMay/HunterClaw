@@ -3,6 +3,8 @@ import path from "node:path";
 
 import Database from "better-sqlite3";
 
+import { deriveConversationTitle, NEW_CHAT_TITLE } from "@/lib/agent/conversations";
+
 const dbPath = path.resolve(process.cwd(), process.env.AGENT_DB_PATH ?? "./data/agent.db");
 const workspaceRoot = path.resolve(process.cwd(), "data/workspace");
 const welcomeFilePath = path.join(workspaceRoot, "welcome.txt");
@@ -13,6 +15,16 @@ fs.mkdirSync(workspaceRoot, { recursive: true });
 const sqlite = new Database(dbPath);
 
 sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS conversations (
+    id TEXT PRIMARY KEY NOT NULL,
+    title TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS conversations_updated_idx
+    ON conversations (updated_at);
+
   CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY NOT NULL,
     conversation_id TEXT NOT NULL,
@@ -97,6 +109,62 @@ sqlite.exec(`
   CREATE INDEX IF NOT EXISTS approval_requests_status_idx
     ON approval_requests (status);
 `);
+
+const conversationRows = sqlite
+  .prepare(
+    [
+      "SELECT id, MIN(created_at) AS created_at, MAX(updated_at) AS updated_at",
+      "FROM (",
+      "  SELECT conversation_id AS id, created_at, created_at AS updated_at FROM messages",
+      "  UNION ALL",
+      "  SELECT conversation_id AS id, created_at, created_at AS updated_at FROM summaries",
+      "  UNION ALL",
+      "  SELECT conversation_id AS id, created_at, created_at AS updated_at FROM tool_executions",
+      "  UNION ALL",
+      "  SELECT conversation_id AS id, created_at, created_at AS updated_at FROM llm_usage_events",
+      "  UNION ALL",
+      "  SELECT conversation_id AS id, created_at, created_at AS updated_at FROM approval_requests",
+      ")",
+      "GROUP BY id",
+    ].join(" "),
+  )
+  .all() as Array<{
+  id: string;
+  created_at: string | null;
+  updated_at: string | null;
+}>;
+
+const firstUserMessageStatement = sqlite.prepare(
+  [
+    "SELECT content",
+    "FROM messages",
+    "WHERE conversation_id = ? AND role = 'user'",
+    "ORDER BY created_at ASC",
+    "LIMIT 1",
+  ].join(" "),
+);
+const insertConversation = sqlite.prepare(
+  [
+    "INSERT OR IGNORE INTO conversations (id, title, created_at, updated_at)",
+    "VALUES (@id, @title, @createdAt, @updatedAt)",
+  ].join(" "),
+);
+
+for (const row of conversationRows) {
+  if (!row.id) {
+    continue;
+  }
+
+  const firstUserMessage = firstUserMessageStatement.get(row.id) as { content: string } | undefined;
+  const timestamp = row.created_at ?? row.updated_at ?? new Date().toISOString();
+
+  insertConversation.run({
+    id: row.id,
+    title: firstUserMessage ? deriveConversationTitle(firstUserMessage.content) : NEW_CHAT_TITLE,
+    createdAt: row.created_at ?? timestamp,
+    updatedAt: row.updated_at ?? timestamp,
+  });
+}
 
 const approvalColumns = sqlite
   .prepare("PRAGMA table_info(approval_requests)")

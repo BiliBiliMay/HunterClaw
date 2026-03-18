@@ -1,8 +1,7 @@
-import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { handleApprovalDecision } from "@/lib/agent/loop";
-import { toErrorMessage } from "@/lib/utils";
+import { jsonDataResponse, jsonErrorResponse } from "@/lib/server/apiResponses";
 
 export const runtime = "nodejs";
 
@@ -16,14 +15,11 @@ export async function POST(request: Request) {
     const body = requestSchema.parse(await request.json());
     const response = await handleApprovalDecision(body);
 
-    return NextResponse.json(response);
+    return jsonDataResponse(response);
   } catch (error) {
-    return NextResponse.json(
-      {
-        error: toErrorMessage(error),
-      },
-      { status: 400 },
-    );
+    return jsonErrorResponse({
+      error,
+      context: "api/approve",
+    });
   }
 }
-

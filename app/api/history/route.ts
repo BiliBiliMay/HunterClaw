@@ -1,8 +1,6 @@
-import { NextResponse } from "next/server";
-
 import { getHistoryPayload } from "@/lib/agent/memory";
 import { DEFAULT_CONVERSATION_ID } from "@/lib/agent/types";
-import { toErrorMessage } from "@/lib/utils";
+import { jsonDataResponse, jsonErrorResponse } from "@/lib/server/apiResponses";
 
 export const runtime = "nodejs";
 
@@ -12,14 +10,11 @@ export async function GET(request: Request) {
     const conversationId = searchParams.get("conversationId") ?? DEFAULT_CONVERSATION_ID;
     const history = await getHistoryPayload(conversationId);
 
-    return NextResponse.json(history);
+    return jsonDataResponse(history);
   } catch (error) {
-    return NextResponse.json(
-      {
-        error: toErrorMessage(error),
-      },
-      { status: 400 },
-    );
+    return jsonErrorResponse({
+      error,
+      context: "api/history",
+    });
   }
 }
-
