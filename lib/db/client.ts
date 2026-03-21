@@ -7,18 +7,10 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { deriveConversationTitle, NEW_CHAT_TITLE } from "@/lib/agent/conversations";
 import * as schema from "@/lib/db/schema";
 
-export const PROJECT_ROOT = path.resolve(process.cwd());
-const dbPath = path.resolve(process.cwd(), process.env.AGENT_DB_PATH ?? "./data/agent.db");
-export const AGENT_FS_ROOT = path.resolve(PROJECT_ROOT, process.env.AGENT_FS_ROOT ?? ".");
-export const WORKSPACE_ROOT = path.resolve(PROJECT_ROOT, "data/workspace");
-
-function ensurePaths() {
-  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-  fs.mkdirSync(AGENT_FS_ROOT, { recursive: true });
-  fs.mkdirSync(WORKSPACE_ROOT, { recursive: true });
-}
-
-ensurePaths();
+export let PROJECT_ROOT = path.resolve(process.cwd());
+export let AGENT_FS_ROOT = path.resolve(PROJECT_ROOT, process.env.AGENT_FS_ROOT ?? ".");
+export let WORKSPACE_ROOT = path.resolve(PROJECT_ROOT, "data/workspace");
+export let dbPath = path.resolve(process.cwd(), process.env.AGENT_DB_PATH ?? "./data/agent.db");
 
 declare global {
   var __hunterClawSqlite__: Database.Database | undefined;
@@ -27,6 +19,25 @@ declare global {
 
 function createDb(client: Database.Database) {
   return drizzle(client, { schema });
+}
+
+function resolveClientPaths({
+  nextDbPath,
+  nextFsRoot,
+}: {
+  nextDbPath?: string;
+  nextFsRoot?: string;
+} = {}) {
+  PROJECT_ROOT = path.resolve(process.cwd());
+  dbPath = path.resolve(PROJECT_ROOT, nextDbPath ?? process.env.AGENT_DB_PATH ?? "./data/agent.db");
+  AGENT_FS_ROOT = path.resolve(PROJECT_ROOT, nextFsRoot ?? process.env.AGENT_FS_ROOT ?? ".");
+  WORKSPACE_ROOT = path.resolve(PROJECT_ROOT, "data/workspace");
+}
+
+function ensurePaths() {
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  fs.mkdirSync(AGENT_FS_ROOT, { recursive: true });
+  fs.mkdirSync(WORKSPACE_ROOT, { recursive: true });
 }
 
 function hasColumn(client: Database.Database, tableName: string, columnName: string) {
@@ -131,6 +142,53 @@ function backfillConversations(client: Database.Database) {
 
 function ensureSchema(client: Database.Database) {
   client.exec(`
+    CREATE TABLE IF NOT EXISTS messages (
+      id TEXT PRIMARY KEY NOT NULL,
+      conversation_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      content TEXT NOT NULL,
+      meta_json TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS messages_conversation_created_idx
+      ON messages (conversation_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS summaries (
+      id TEXT PRIMARY KEY NOT NULL,
+      conversation_id TEXT NOT NULL,
+      content TEXT NOT NULL,
+      last_message_id TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS summaries_conversation_created_idx
+      ON summaries (conversation_id, created_at);
+
+    CREATE TABLE IF NOT EXISTS preferences (
+      key TEXT PRIMARY KEY NOT NULL,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS tool_executions (
+      id TEXT PRIMARY KEY NOT NULL,
+      conversation_id TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      args_json TEXT NOT NULL,
+      presentation_json TEXT,
+      risk_level TEXT NOT NULL,
+      status TEXT NOT NULL,
+      result_json TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS tool_executions_conversation_created_idx
+      ON tool_executions (conversation_id, created_at);
+
     CREATE TABLE IF NOT EXISTS llm_usage_events (
       id TEXT PRIMARY KEY NOT NULL,
       conversation_id TEXT NOT NULL,
@@ -149,6 +207,26 @@ function ensureSchema(client: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS llm_usage_events_source_message_idx
       ON llm_usage_events (source_message_id);
+
+    CREATE TABLE IF NOT EXISTS approval_requests (
+      id TEXT PRIMARY KEY NOT NULL,
+      conversation_id TEXT NOT NULL,
+      source_message_id TEXT,
+      tool_name TEXT NOT NULL,
+      args_json TEXT NOT NULL,
+      presentation_json TEXT,
+      risk_level TEXT NOT NULL,
+      status TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      resolved_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS approval_requests_conversation_created_idx
+      ON approval_requests (conversation_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS approval_requests_status_idx
+      ON approval_requests (status);
   `);
 
   ensureConversationTable(client);
@@ -160,16 +238,71 @@ function ensureSchema(client: Database.Database) {
     `);
   }
 
+  if (hasTable(client, "tool_executions") && !hasColumn(client, "tool_executions", "presentation_json")) {
+    client.exec(`
+      ALTER TABLE tool_executions
+      ADD COLUMN presentation_json TEXT;
+    `);
+  }
+
+  if (hasTable(client, "approval_requests") && !hasColumn(client, "approval_requests", "presentation_json")) {
+    client.exec(`
+      ALTER TABLE approval_requests
+      ADD COLUMN presentation_json TEXT;
+    `);
+  }
+
   backfillConversations(client);
 }
 
-const sqlite = globalThis.__hunterClawSqlite__ ?? new Database(dbPath);
-ensureSchema(sqlite);
-const db = globalThis.__hunterClawDb__ ?? createDb(sqlite);
+let sqlite: Database.Database | undefined = globalThis.__hunterClawSqlite__;
+export let db = globalThis.__hunterClawDb__ as ReturnType<typeof createDb>;
 
-if (process.env.NODE_ENV !== "production") {
-  globalThis.__hunterClawSqlite__ = sqlite;
-  globalThis.__hunterClawDb__ = db;
+function initializeClient({
+  nextDbPath,
+  nextFsRoot,
+  forceNew = false,
+}: {
+  nextDbPath?: string;
+  nextFsRoot?: string;
+  forceNew?: boolean;
+} = {}) {
+  resolveClientPaths({
+    nextDbPath,
+    nextFsRoot,
+  });
+  ensurePaths();
+
+  if (forceNew && sqlite) {
+    sqlite.close();
+    sqlite = undefined;
+    db = undefined as unknown as ReturnType<typeof createDb>;
+    globalThis.__hunterClawSqlite__ = undefined;
+    globalThis.__hunterClawDb__ = undefined;
+  }
+
+  sqlite = sqlite ?? new Database(dbPath);
+  ensureSchema(sqlite);
+  db = db ?? createDb(sqlite);
+
+  if (process.env.NODE_ENV !== "production") {
+    globalThis.__hunterClawSqlite__ = sqlite;
+    globalThis.__hunterClawDb__ = db;
+  }
 }
 
-export { db, dbPath };
+initializeClient();
+
+export function reinitializeDbClientForTests({
+  nextDbPath,
+  nextFsRoot,
+}: {
+  nextDbPath: string;
+  nextFsRoot?: string;
+}) {
+  initializeClient({
+    nextDbPath,
+    nextFsRoot,
+    forceNew: true,
+  });
+}

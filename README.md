@@ -36,7 +36,8 @@ The app runs entirely on your machine for the MVP:
 - SQLite persistence for messages, summaries, preferences, tool executions, and approvals
 - rolling summary memory for older messages
 - multi-step agent loop that can chain tool calls before answering
-- file tool with low-risk project access and approval-gated local machine access
+- file tool with low-risk project access for reading and listing local files
+- dedicated code tool for file creation, single-file patch application, and before/after diff previews
 - safe shell tool with a readonly allowlist and blocked dangerous commands
 - Playwright-backed browser tool with approval for `click` and `type`
 - provider abstraction with a working API provider and a stubbed `codexProvider`
@@ -161,7 +162,7 @@ The web UI shows:
 Recommended use:
 - ask the agent normal questions about the repo
 - ask it to inspect code before answering
-- ask it to make changes, then approve writes when prompted
+- ask it to make changes, then review the code diff preview before approving
 
 ### Terminal CLI
 
@@ -277,6 +278,7 @@ If Next.js chooses a different port, replace `3000` with the actual printed port
 - `npm run dev` - start the local dev server
 - `npm run build` - create a production build
 - `npm run start` - run the production server after build
+- `npm test` - run the focused code tool test suite
 - `npm run typecheck` - run TypeScript checks
 - `npm run db:setup` - create SQLite tables and seed `data/workspace/welcome.txt`
 - `npm run agent:cli` - run the terminal agent REPL or one-shot CLI

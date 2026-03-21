@@ -10,6 +10,7 @@ import {
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
+import { CodeChangePreview } from "@/components/chat/code-change-preview";
 import { DEFAULT_CONVERSATION_ID } from "@/lib/agent/types";
 import type {
   ApprovalSummaryRecord,
@@ -349,6 +350,9 @@ function ToolActivity({
           </span>
         </div>
         <p className="mt-2 text-sm leading-6 text-slate-700">{toolExecution.summary}</p>
+        {toolExecution.toolName === "codeTool" && toolExecution.details ? (
+          <CodeChangePreview defaultOpen={Boolean(live)} details={toolExecution.details} />
+        ) : null}
       </div>
     </div>
   );
@@ -378,6 +382,9 @@ function ApprovalNotice({
           </span>
         </div>
         <p className="mt-2 text-sm leading-6 text-amber-950">{approval.summary}</p>
+        {approval.toolName === "codeTool" && approval.details ? (
+          <CodeChangePreview defaultOpen details={approval.details} />
+        ) : null}
         <div className="mt-4 flex flex-wrap gap-2">
           <button
             className="rounded-full bg-[#202123] px-4 py-2 text-sm font-medium text-white transition hover:bg-black disabled:cursor-not-allowed disabled:bg-slate-400"

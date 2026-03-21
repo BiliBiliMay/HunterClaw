@@ -13,6 +13,7 @@ import type {
   LlmUsageEvent,
   MessageKind,
   ProviderUsage,
+  ToolPresentationDetails,
   ToolTimelineRecord,
   ToolExecutionRecord,
   ToolResult,
@@ -92,6 +93,7 @@ function mapToolExecutionRow(row: typeof toolExecutions.$inferSelect): ToolExecu
     conversationId: row.conversationId,
     toolName: row.toolName,
     args: safeJsonParse(row.argsJson, null),
+    presentation: safeJsonParse<ToolPresentationDetails | null>(row.presentationJson, null),
     riskLevel: row.riskLevel as ToolExecutionRecord["riskLevel"],
     status: row.status as ToolExecutionRecord["status"],
     result: safeJsonParse(row.resultJson, null),
@@ -108,6 +110,7 @@ function mapApprovalRow(row: typeof approvalRequests.$inferSelect): ApprovalRequ
     sourceMessageId: row.sourceMessageId,
     toolName: row.toolName,
     args: safeJsonParse(row.argsJson, null),
+    presentation: safeJsonParse<ToolPresentationDetails | null>(row.presentationJson, null),
     riskLevel: row.riskLevel as ApprovalRequestRecord["riskLevel"],
     status: row.status as ApprovalRequestRecord["status"],
     reason: row.reason,
@@ -510,6 +513,7 @@ export async function createApprovalRequest({
   sourceMessageId,
   toolName,
   args,
+  presentation = null,
   riskLevel,
   reason,
 }: {
@@ -517,6 +521,7 @@ export async function createApprovalRequest({
   sourceMessageId: string | null;
   toolName: string;
   args: unknown;
+  presentation?: ToolPresentationDetails | null;
   riskLevel: ApprovalRequestRecord["riskLevel"];
   reason: string;
 }) {
@@ -526,6 +531,7 @@ export async function createApprovalRequest({
     sourceMessageId,
     toolName,
     args,
+    presentation,
     riskLevel,
     status: "pending",
     reason,
@@ -542,6 +548,7 @@ export async function createApprovalRequest({
       sourceMessageId,
       toolName,
       argsJson: toJsonString(args),
+      presentationJson: presentation ? toJsonString(presentation) : null,
       riskLevel,
       status: approvalRequest.status,
       reason,
@@ -592,11 +599,13 @@ export async function logToolExecutionStart({
   conversationId,
   toolName,
   args,
+  presentation = null,
   riskLevel,
 }: {
   conversationId: string;
   toolName: string;
   args: unknown;
+  presentation?: ToolPresentationDetails | null;
   riskLevel: ToolExecutionRecord["riskLevel"];
 }) {
   const execution: ToolExecutionRecord = {
@@ -604,6 +613,7 @@ export async function logToolExecutionStart({
     conversationId,
     toolName,
     args,
+    presentation,
     riskLevel,
     status: "running",
     result: null,
@@ -620,6 +630,7 @@ export async function logToolExecutionStart({
       conversationId,
       toolName,
       argsJson: toJsonString(args),
+      presentationJson: presentation ? toJsonString(presentation) : null,
       riskLevel,
       status: execution.status,
       resultJson: null,
@@ -635,6 +646,7 @@ export async function logToolExecutionStart({
 export async function finishToolExecution(
   executionId: string,
   result: ToolResult,
+  presentation?: ToolPresentationDetails | null,
 ) {
   const finishedAt = nowIso();
 
@@ -642,6 +654,11 @@ export async function finishToolExecution(
     .set({
       status: result.status,
       resultJson: toJsonString(result.output),
+      ...(presentation !== undefined
+        ? {
+            presentationJson: presentation ? toJsonString(presentation) : null,
+          }
+        : {}),
       error: result.error,
       finishedAt,
     })

@@ -60,6 +60,7 @@ sqlite.exec(`
     conversation_id TEXT NOT NULL,
     tool_name TEXT NOT NULL,
     args_json TEXT NOT NULL,
+    presentation_json TEXT,
     risk_level TEXT NOT NULL,
     status TEXT NOT NULL,
     result_json TEXT,
@@ -96,6 +97,7 @@ sqlite.exec(`
     source_message_id TEXT,
     tool_name TEXT NOT NULL,
     args_json TEXT NOT NULL,
+    presentation_json TEXT,
     risk_level TEXT NOT NULL,
     status TEXT NOT NULL,
     reason TEXT NOT NULL,
@@ -174,6 +176,24 @@ if (!approvalColumns.some((column) => column.name === "source_message_id")) {
   sqlite.exec(`
     ALTER TABLE approval_requests
     ADD COLUMN source_message_id TEXT;
+  `);
+}
+
+const toolExecutionColumns = sqlite
+  .prepare("PRAGMA table_info(tool_executions)")
+  .all() as Array<{ name: string }>;
+
+if (!toolExecutionColumns.some((column) => column.name === "presentation_json")) {
+  sqlite.exec(`
+    ALTER TABLE tool_executions
+    ADD COLUMN presentation_json TEXT;
+  `);
+}
+
+if (!approvalColumns.some((column) => column.name === "presentation_json")) {
+  sqlite.exec(`
+    ALTER TABLE approval_requests
+    ADD COLUMN presentation_json TEXT;
   `);
 }
 

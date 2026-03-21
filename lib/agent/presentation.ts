@@ -2,6 +2,7 @@ import type {
   ApprovalRequestRecord,
   ApprovalSummaryRecord,
   ToolExecutionRecord,
+  ToolPresentationDetails,
   ToolTimelineRecord,
 } from "@/lib/agent/types";
 
@@ -13,8 +14,27 @@ function asString(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-export function summarizeToolCall(toolName: string, args: unknown) {
+export function summarizeToolCall(
+  toolName: string,
+  args: unknown,
+  presentation?: ToolPresentationDetails | null,
+) {
   const parsedArgs = asRecord(args);
+
+  if (toolName === "codeTool") {
+    const action = asString(parsedArgs?.action) ?? presentation?.action ?? null;
+    const targetPath = asString(parsedArgs?.path) ?? presentation?.path ?? null;
+
+    if (action === "createFile" && targetPath) {
+      return `Creating ${targetPath}`;
+    }
+
+    if (action === "applyPatch" && targetPath) {
+      return `Patching ${targetPath}`;
+    }
+
+    return "Applying a code change";
+  }
 
   if (toolName === "fileTool") {
     const action = asString(parsedArgs?.action);
@@ -77,7 +97,8 @@ export function toToolTimelineRecord(record: ToolExecutionRecord): ToolTimelineR
     toolName: record.toolName,
     riskLevel: record.riskLevel,
     status: record.status,
-    summary: summarizeToolCall(record.toolName, record.args),
+    summary: summarizeToolCall(record.toolName, record.args, record.presentation),
+    details: record.presentation,
     createdAt: record.createdAt,
     finishedAt: record.finishedAt,
   };
@@ -88,7 +109,8 @@ export function toApprovalSummaryRecord(record: ApprovalRequestRecord): Approval
     id: record.id,
     toolName: record.toolName,
     riskLevel: record.riskLevel,
-    summary: summarizeToolCall(record.toolName, record.args),
+    summary: summarizeToolCall(record.toolName, record.args, record.presentation),
+    details: record.presentation,
     createdAt: record.createdAt,
     resolvedAt: record.resolvedAt,
   };

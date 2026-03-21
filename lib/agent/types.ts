@@ -7,6 +7,7 @@ export type ToolExecutionStatus = "running" | "success" | "error" | "blocked";
 export type ApprovalStatus = "pending" | "approved" | "denied";
 export type LlmUsageOperation = "decision" | "response" | "summary";
 export type ChatPhase = "planning" | "running_tool" | "waiting_approval" | "responding";
+export type CodeToolAction = "createFile" | "applyPatch";
 
 export type JsonValue =
   | string
@@ -17,6 +18,24 @@ export type JsonValue =
   | { [key: string]: JsonValue };
 
 export type JsonRecord = { [key: string]: JsonValue };
+
+export type CodePresentationStats = {
+  additions: number;
+  deletions: number;
+  bytesBefore: number;
+  bytesAfter: number;
+};
+
+export type ToolPresentationDetails = {
+  action: CodeToolAction;
+  path: string;
+  language: string;
+  stats: CodePresentationStats;
+  patch: string | null;
+  beforeSnippet: string | null;
+  afterSnippet: string | null;
+  truncated: boolean;
+};
 
 export type ChatMessage = {
   id: string;
@@ -49,6 +68,7 @@ export type ApprovalRequestRecord = {
   sourceMessageId: string | null;
   toolName: string;
   args: unknown;
+  presentation: ToolPresentationDetails | null;
   riskLevel: RiskLevel;
   status: ApprovalStatus;
   reason: string;
@@ -61,6 +81,7 @@ export type ToolExecutionRecord = {
   conversationId: string;
   toolName: string;
   args: unknown;
+  presentation: ToolPresentationDetails | null;
   riskLevel: RiskLevel;
   status: ToolExecutionStatus;
   result: unknown;
@@ -75,6 +96,7 @@ export type ToolTimelineRecord = {
   riskLevel: RiskLevel;
   status: ToolExecutionStatus;
   summary: string;
+  details: ToolPresentationDetails | null;
   createdAt: string;
   finishedAt: string | null;
 };
@@ -84,6 +106,7 @@ export type ApprovalSummaryRecord = {
   toolName: string;
   riskLevel: RiskLevel;
   summary: string;
+  details: ToolPresentationDetails | null;
   createdAt: string;
   resolvedAt: string | null;
 };

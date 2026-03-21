@@ -2,6 +2,7 @@ import type { ZodType } from "zod";
 
 import type { JsonValue, RiskLevel } from "@/lib/agent/types";
 import { browserTool } from "@/lib/tools/browserTool";
+import { codeTool } from "@/lib/tools/codeTool";
 import { fileTool } from "@/lib/tools/fileTool";
 import { shellTool } from "@/lib/tools/shellTool";
 
@@ -13,7 +14,7 @@ export interface ToolDefinition<TArgs = unknown> {
   execute(args: TArgs): Promise<JsonValue>;
 }
 
-const tools: ToolDefinition<any>[] = [fileTool, shellTool, browserTool];
+const tools: ToolDefinition<any>[] = [fileTool, codeTool, shellTool, browserTool];
 const toolRegistry = new Map(tools.map((tool) => [tool.name, tool]));
 
 export function listTools() {

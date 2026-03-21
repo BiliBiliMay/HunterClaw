@@ -158,11 +158,37 @@ function renderMessage(message: ChatMessage) {
 function renderToolExecution(toolExecution: ToolTimelineRecord) {
   printLine(`Tool ${toolExecution.toolName} [${toolExecution.status}/${toolExecution.riskLevel}]`);
   printLine(`Summary: ${toolExecution.summary}`);
+  if (toolExecution.toolName === "codeTool" && toolExecution.details) {
+    printLine(`Path: ${toolExecution.details.path}`);
+    printLine(
+      `Change: ${toolExecution.details.action} (+${toolExecution.details.stats.additions}/-${toolExecution.details.stats.deletions}, ${toolExecution.details.stats.bytesBefore}B -> ${toolExecution.details.stats.bytesAfter}B)`,
+    );
+    if (toolExecution.details.patch) {
+      printLine("Patch:");
+      printLine(toolExecution.details.patch);
+    }
+    if (toolExecution.details.truncated) {
+      printLine("(preview truncated)");
+    }
+  }
 }
 
 function renderApproval(approval: ApprovalSummaryRecord) {
   printLine(`Approval required for ${approval.toolName} [${approval.riskLevel}]`);
   printLine(`Summary: ${approval.summary}`);
+  if (approval.toolName === "codeTool" && approval.details) {
+    printLine(`Path: ${approval.details.path}`);
+    printLine(
+      `Change: ${approval.details.action} (+${approval.details.stats.additions}/-${approval.details.stats.deletions}, ${approval.details.stats.bytesBefore}B -> ${approval.details.stats.bytesAfter}B)`,
+    );
+    if (approval.details.patch) {
+      printLine("Patch:");
+      printLine(approval.details.patch);
+    }
+    if (approval.details.truncated) {
+      printLine("(preview truncated)");
+    }
+  }
 }
 
 function renderNewHistory(history: HistoryPayload, seen: SeenState) {

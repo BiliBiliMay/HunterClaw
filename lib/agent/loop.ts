@@ -33,7 +33,9 @@ import {
   toApprovalSummaryRecord,
   toToolTimelineRecord,
 } from "@/lib/agent/presentation";
+import type { ToolPresentationDetails } from "@/lib/agent/types";
 import { validateToolCall } from "@/lib/tools/registry";
+import { prepareCodeToolOperation } from "@/lib/tools/codeTool";
 import { toErrorMessage } from "@/lib/utils";
 
 const LOOP_LIMIT = 8;
@@ -134,12 +136,14 @@ async function executeTool({
   conversationId,
   toolName,
   args,
+  presentation,
   riskLevel,
   onEvent,
 }: {
   conversationId: string;
   toolName: string;
   args: unknown;
+  presentation?: ToolPresentationDetails | null;
   riskLevel: ToolResult["riskLevel"];
   onEvent?: TurnEventSink;
 }) {
@@ -149,6 +153,7 @@ async function executeTool({
     conversationId,
     toolName,
     args,
+    presentation,
     riskLevel,
   });
 
@@ -182,7 +187,7 @@ async function executeTool({
     };
   }
 
-  const storedExecution = await finishToolExecution(execution.id, toolResult);
+  const storedExecution = await finishToolExecution(execution.id, toolResult, presentation);
 
   if (storedExecution) {
     await emitEvent(onEvent, {
@@ -353,11 +358,16 @@ async function continueAgentLoop({
 
     let parsedArgs;
     let riskLevel: ToolResult["riskLevel"];
+    let presentation: ToolPresentationDetails | null = null;
 
     try {
       const validatedToolCall = validateToolCall(decision.toolName, decision.args);
       parsedArgs = validatedToolCall.parsedArgs;
       riskLevel = validatedToolCall.tool.getRiskLevel(parsedArgs);
+
+      if (decision.toolName === "codeTool") {
+        presentation = (await prepareCodeToolOperation(parsedArgs)).presentation;
+      }
     } catch (error) {
       lastToolResult = {
         toolName: decision.toolName,
@@ -381,6 +391,7 @@ async function continueAgentLoop({
           sourceMessageId: latestUserMessageId,
           toolName: decision.toolName,
           args: parsedArgs,
+          presentation,
           riskLevel,
           reason: decision.reason,
         });
@@ -413,6 +424,7 @@ async function continueAgentLoop({
       conversationId,
       toolName: decision.toolName,
       args: parsedArgs,
+      presentation,
       riskLevel,
       onEvent,
     });
@@ -524,6 +536,7 @@ export async function handleApprovalDecision({
     conversationId: updatedApproval.conversationId,
     toolName: updatedApproval.toolName,
     args: updatedApproval.args,
+    presentation: updatedApproval.presentation,
     riskLevel: updatedApproval.riskLevel,
   });
 
@@ -602,6 +615,7 @@ export async function streamApprovalDecision({
     conversationId: updatedApproval.conversationId,
     toolName: updatedApproval.toolName,
     args: updatedApproval.args,
+    presentation: updatedApproval.presentation,
     riskLevel: updatedApproval.riskLevel,
     onEvent,
   });
