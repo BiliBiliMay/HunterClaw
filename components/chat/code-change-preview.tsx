@@ -1,8 +1,8 @@
 "use client";
 
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { oneLight } from "react-syntax-highlighter/dist/esm/styles/prism";
 
+import { getSyntaxTheme, type ThemeMode } from "@/components/chat/syntax-theme";
 import type { ToolPresentationDetails } from "@/lib/agent/types";
 
 function formatActionLabel(action: ToolPresentationDetails["action"]) {
@@ -14,14 +14,16 @@ function PreviewPane({
   emptyLabel,
   label,
   language,
+  themeMode,
 }: {
   content: string | null;
   emptyLabel: string;
   label: string;
   language: string;
+  themeMode: ThemeMode;
 }) {
   return (
-    <div className="overflow-hidden rounded-2xl border border-[var(--hc-border)] bg-white">
+    <div className="overflow-hidden rounded-2xl border border-[var(--hc-border)] bg-[var(--hc-panel-elevated)]">
       <div className="border-b border-[var(--hc-border)] px-4 py-2 text-xs font-semibold uppercase tracking-[0.16em] text-[var(--hc-muted)]">
         {label}
       </div>
@@ -36,7 +38,7 @@ function PreviewPane({
           }}
           language={language}
           showLineNumbers
-          style={oneLight}
+          style={getSyntaxTheme(themeMode)}
           wrapLongLines
         >
           {content}
@@ -51,9 +53,11 @@ function PreviewPane({
 export function CodeChangePreview({
   defaultOpen = false,
   details,
+  themeMode,
 }: {
   defaultOpen?: boolean;
   details: ToolPresentationDetails;
+  themeMode: ThemeMode;
 }) {
   return (
     <details className="mt-4 overflow-hidden rounded-[1.25rem] border border-[var(--hc-border)] bg-[var(--hc-panel)]" open={defaultOpen}>
@@ -67,7 +71,7 @@ export function CodeChangePreview({
             +{details.stats.additions}/-{details.stats.deletions}
           </span>
           {details.truncated ? (
-            <span className="rounded-full border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] uppercase tracking-[0.14em] text-amber-800">
+            <span className="rounded-full border border-[var(--hc-warning-border)] bg-[var(--hc-warning-badge-bg)] px-2 py-1 text-[11px] uppercase tracking-[0.14em] text-[var(--hc-warning-badge-text)]">
               Truncated
             </span>
           ) : null}
@@ -84,7 +88,13 @@ export function CodeChangePreview({
 
         {details.patch ? (
           <div className="mb-4">
-            <PreviewPane content={details.patch} emptyLabel="No patch preview available." label="Patch" language="diff" />
+            <PreviewPane
+              content={details.patch}
+              emptyLabel="No patch preview available."
+              label="Patch"
+              language="diff"
+              themeMode={themeMode}
+            />
           </div>
         ) : null}
 
@@ -94,12 +104,14 @@ export function CodeChangePreview({
             emptyLabel="No prior file content."
             label="Before"
             language={details.language}
+            themeMode={themeMode}
           />
           <PreviewPane
             content={details.afterSnippet}
             emptyLabel="No resulting file content."
             label="After"
             language={details.language}
+            themeMode={themeMode}
           />
         </div>
       </div>
