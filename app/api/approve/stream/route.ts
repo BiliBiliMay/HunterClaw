@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { streamApprovalDecision } from "@/lib/agent/loop";
-import { createNdjsonStreamResponse } from "@/lib/agent/streaming";
+import { createSseStreamResponse } from "@/lib/agent/streaming";
 import { jsonErrorResponse } from "@/lib/server/apiResponses";
 
 export const runtime = "nodejs";
@@ -20,7 +20,7 @@ export async function POST(request: Request) {
       decision: body.decision,
     });
 
-    return createNdjsonStreamResponse("api/approve/stream", async (send) => {
+    return createSseStreamResponse("api/approve/stream", async (send) => {
       await streamApprovalDecision({
         requestId: body.requestId,
         decision: body.decision,

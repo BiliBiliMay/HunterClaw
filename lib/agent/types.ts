@@ -28,13 +28,6 @@ export type ChatMessage = {
   createdAt: string;
 };
 
-export type ConversationListItem = {
-  id: string;
-  title: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
 export type ToolCall = {
   toolName: string;
   args: unknown;

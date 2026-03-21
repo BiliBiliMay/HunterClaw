@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import { streamAgentTurn } from "@/lib/agent/loop";
-import { createNdjsonStreamResponse } from "@/lib/agent/streaming";
+import { createSseStreamResponse } from "@/lib/agent/streaming";
 import { DEFAULT_CONVERSATION_ID } from "@/lib/agent/types";
 import { jsonErrorResponse } from "@/lib/server/apiResponses";
 
@@ -20,7 +20,7 @@ export async function POST(request: Request) {
       conversationId: body.conversationId ?? DEFAULT_CONVERSATION_ID,
     });
 
-    return createNdjsonStreamResponse("api/chat/stream", async (send) => {
+    return createSseStreamResponse("api/chat/stream", async (send) => {
       await streamAgentTurn({
         message: body.message,
         conversationId: body.conversationId ?? DEFAULT_CONVERSATION_ID,

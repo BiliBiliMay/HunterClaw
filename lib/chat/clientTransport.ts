@@ -29,8 +29,8 @@ function isJsonContentType(contentType: string | null) {
   return normalized.includes("application/json") || normalized.includes("+json");
 }
 
-function isNdjsonContentType(contentType: string | null) {
-  return Boolean(contentType?.toLowerCase().includes("application/x-ndjson"));
+function isSseContentType(contentType: string | null) {
+  return Boolean(contentType?.toLowerCase().includes("text/event-stream"));
 }
 
 async function readTextBody(response: Response) {
@@ -131,20 +131,52 @@ export async function fetchJsonOrTextError<T>(
   return payload as T;
 }
 
-function parseNdjsonLine(line: string, fallbackMessage: string) {
+function parseSseFrame(frame: string, fallbackMessage: string) {
+  let eventType: string | null = null;
+  const dataLines: string[] = [];
+
+  for (const rawLine of frame.split(/\r?\n/)) {
+    const line = rawLine.trimEnd();
+
+    if (!line || line.startsWith(":")) {
+      continue;
+    }
+
+    if (line.startsWith("event:")) {
+      eventType = line.slice("event:".length).trim();
+      continue;
+    }
+
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice("data:".length).trimStart());
+    }
+  }
+
+  if (dataLines.length === 0) {
+    return null;
+  }
+
+  const data = dataLines.join("\n");
+
   try {
-    return JSON.parse(line) as ChatStreamEvent;
+    const parsed = JSON.parse(data) as ChatStreamEvent;
+
+    if (eventType && parsed.type !== eventType) {
+      throw new Error(`event type mismatch (${eventType} != ${parsed.type})`);
+    }
+
+    return parsed;
   } catch {
-    const snippet = normalizeSnippet(line);
+    const snippet = normalizeSnippet(frame);
     throw new Error(
       snippet
-        ? `${fallbackMessage}: streaming response was not valid NDJSON. ${snippet}`
-        : `${fallbackMessage}: streaming response was not valid NDJSON.`,
+        ? `${fallbackMessage}: streaming response was not valid SSE. ${snippet}`
+        : `${fallbackMessage}: streaming response was not valid SSE.`,
     );
   }
 }
 
-export async function consumeNdjsonStream({
+export async function consumeSseStream({
   input,
   init,
   fallbackMessage,
@@ -174,7 +206,7 @@ export async function consumeNdjsonStream({
     });
   }
 
-  if (!isNdjsonContentType(contentType)) {
+  if (!isSseContentType(contentType)) {
     const bodyText = await readTextBody(response);
     throw buildHttpError({
       fallbackMessage,
@@ -201,23 +233,33 @@ export async function consumeNdjsonStream({
     }
 
     buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
 
-    for (const rawLine of lines) {
-      const line = rawLine.trim();
+    while (true) {
+      const boundary = buffer.match(/\r?\n\r?\n/);
 
-      if (!line) {
-        continue;
+      if (!boundary || boundary.index == null) {
+        break;
       }
 
-      await onEvent(parseNdjsonLine(line, fallbackMessage));
+      const frame = buffer.slice(0, boundary.index);
+      buffer = buffer.slice(boundary.index + boundary[0].length);
+      const parsed = parseSseFrame(frame, fallbackMessage);
+
+      if (parsed) {
+        await onEvent(parsed);
+      }
     }
   }
 
-  const trailingLine = buffer.trim();
+  buffer += decoder.decode();
 
-  if (trailingLine) {
-    await onEvent(parseNdjsonLine(trailingLine, fallbackMessage));
+  const trailingFrame = buffer.trim();
+  if (!trailingFrame) {
+    return;
+  }
+
+  const parsed = parseSseFrame(trailingFrame, fallbackMessage);
+  if (parsed) {
+    await onEvent(parsed);
   }
 }

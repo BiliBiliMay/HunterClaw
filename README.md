@@ -32,7 +32,7 @@ The app runs entirely on your machine for the MVP:
 - multiple isolated conversations in both the web UI and the CLI
 - conversation token tracking with totals and latest-turn usage
 - terminal CLI for agent-style conversations
-- `GET /api/conversations`, `POST /api/chat`, `POST /api/approve`, `GET /api/history`
+- `GET /api/conversations`, `POST /api/conversations`, `POST /api/chat`, `POST /api/chat/stream`, `POST /api/approve`, `POST /api/approve/stream`, `GET /api/history`
 - SQLite persistence for messages, summaries, preferences, tool executions, and approvals
 - rolling summary memory for older messages
 - multi-step agent loop that can chain tool calls before answering
@@ -152,9 +152,9 @@ Then open the local URL printed by Next.js, usually [http://localhost:3000](http
 
 The web UI shows:
 - a conversation list with new-thread creation and switching
-- user and assistant messages
+- user and assistant messages with live token-by-token assistant streaming
 - compact tool executions without raw payload dumps
-- approval cards for medium/high-risk actions
+- approval cards for medium/high-risk actions with live resume after approve/deny
 - the active provider name
 - conversation and last-turn token usage cards
 
@@ -218,10 +218,18 @@ npm run dev
 
 Then use the routes directly.
 
-Send a chat message:
+Send a non-streaming chat message:
 
 ```bash
 curl -X POST http://localhost:3000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"conversationId":"bugfix","message":"inspect this repo and explain how the agent loop works"}'
+```
+
+Stream a chat turn over SSE:
+
+```bash
+curl -N -X POST http://localhost:3000/api/chat/stream \
   -H "Content-Type: application/json" \
   -d '{"conversationId":"bugfix","message":"inspect this repo and explain how the agent loop works"}'
 ```
@@ -232,19 +240,35 @@ List conversations:
 curl "http://localhost:3000/api/conversations"
 ```
 
+Create an empty conversation:
+
+```bash
+curl -X POST http://localhost:3000/api/conversations
+```
+
 Load history:
 
 ```bash
 curl "http://localhost:3000/api/history?conversationId=default"
 ```
 
-Approve or deny a pending action:
+Approve or deny a pending action without streaming:
 
 ```bash
 curl -X POST http://localhost:3000/api/approve \
   -H "Content-Type: application/json" \
   -d '{"requestId":"approval_id_here","decision":"approve"}'
 ```
+
+Resume a pending action over SSE:
+
+```bash
+curl -N -X POST http://localhost:3000/api/approve/stream \
+  -H "Content-Type: application/json" \
+  -d '{"requestId":"approval_id_here","decision":"approve"}'
+```
+
+The web UI uses the SSE endpoints so it can render assistant deltas and tool lifecycle updates in real time. The CLI and other simple clients can keep using the JSON endpoints.
 
 If Next.js chooses a different port, replace `3000` with the actual printed port.
 

@@ -1,7 +1,11 @@
 import type { ChatStreamEvent } from "@/lib/agent/types";
 import { toErrorMessage } from "@/lib/utils";
 
-export function createNdjsonStreamResponse(
+function formatSseFrame(event: ChatStreamEvent) {
+  return `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+}
+
+export function createSseStreamResponse(
   label: string,
   executor: (send: (event: ChatStreamEvent) => Promise<void>) => Promise<void>,
 ) {
@@ -13,7 +17,7 @@ export function createNdjsonStreamResponse(
     new ReadableStream({
       async start(controller) {
         const send = async (event: ChatStreamEvent) => {
-          controller.enqueue(encoder.encode(`${JSON.stringify(event)}\n`));
+          controller.enqueue(encoder.encode(formatSseFrame(event)));
         };
 
         try {
@@ -35,7 +39,8 @@ export function createNdjsonStreamResponse(
       headers: {
         "Cache-Control": "no-cache, no-transform",
         Connection: "keep-alive",
-        "Content-Type": "application/x-ndjson; charset=utf-8",
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "X-Accel-Buffering": "no",
         "X-Content-Type-Options": "nosniff",
       },
     },

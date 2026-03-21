@@ -6,11 +6,7 @@ import type {
   ApprovalSummaryRecord,
   ChatMessage,
   ChatRole,
-<<<<<<< HEAD
-  ConversationListItem,
-=======
   ConversationSummary,
->>>>>>> 6622509 (feat: Add conversation management to the agent CLI with new commands and API routes.)
   ConversationUsageSummary,
   HistoryPayload,
   JsonRecord,
@@ -63,6 +59,19 @@ function parseTokenValue(value: string | null) {
 
   const parsedValue = Number.parseInt(value, 10);
   return Number.isFinite(parsedValue) ? parsedValue : null;
+}
+
+function truncateInlineText(value: string, maxLength: number) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return null;
+  }
+
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
 }
 
 function mapMessageRow(row: typeof messages.$inferSelect): ChatMessage {
@@ -145,14 +154,40 @@ function aggregateUsage(rows: LlmUsageEvent[]): UsageTotals {
   return totals;
 }
 
-<<<<<<< HEAD
-function mapConversationRow(row: typeof conversations.$inferSelect): ConversationListItem {
+function createConversationSummarySeed(row?: typeof conversations.$inferSelect) {
+  const storedTitle = row?.title?.trim() ?? "";
+
   return {
-    id: row.id,
-    title: row.title,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt,
+    id: row?.id ?? "",
+    titleSeed: storedTitle && storedTitle !== NEW_CHAT_TITLE ? storedTitle : null,
+    titleFromUser: storedTitle !== "" && storedTitle !== NEW_CHAT_TITLE,
+    preview: null as string | null,
+    createdAt: row?.createdAt ?? null,
+    lastActivityAt: row && row.updatedAt !== row.createdAt ? row.updatedAt : null,
+    messageCount: 0,
+    pendingApprovalCount: 0,
   };
+}
+
+function getConversationFallbackTitle(conversationId: string) {
+  if (conversationId === DEFAULT_CONVERSATION_ID) {
+    return "Default conversation";
+  }
+
+  return NEW_CHAT_TITLE;
+}
+
+function touchConversationActivity(
+  conversation: ReturnType<typeof createConversationSummarySeed>,
+  timestamp: string,
+) {
+  if (!conversation.createdAt || timestamp < conversation.createdAt) {
+    conversation.createdAt = timestamp;
+  }
+
+  if (!conversation.lastActivityAt || timestamp > conversation.lastActivityAt) {
+    conversation.lastActivityAt = timestamp;
+  }
 }
 
 async function ensureConversationRecord(
@@ -218,82 +253,28 @@ async function maybeUpdateConversationTitleFromFirstUserMessage(
     .run();
 }
 
-export async function createConversation() {
+export async function createConversation(): Promise<ConversationSummary> {
   const createdAt = nowIso();
-  const conversation: ConversationListItem = {
-    id: createId("conversation"),
-    title: NEW_CHAT_TITLE,
-    createdAt,
-    updatedAt: createdAt,
-  };
+  const conversationId = createId("conversation");
 
   db.insert(conversations)
     .values({
-      id: conversation.id,
-      title: conversation.title,
-      createdAt: conversation.createdAt,
-      updatedAt: conversation.updatedAt,
+      id: conversationId,
+      title: NEW_CHAT_TITLE,
+      createdAt,
+      updatedAt: createdAt,
     })
     .run();
 
-  return conversation;
-}
-
-export async function listConversations() {
-  const rows = db
-    .select()
-    .from(conversations)
-    .orderBy(desc(conversations.updatedAt), desc(conversations.createdAt))
-    .all();
-
-  return rows.map(mapConversationRow);
-=======
-function truncateInlineText(value: string, maxLength: number) {
-  const normalized = value.replace(/\s+/g, " ").trim();
-  if (!normalized) {
-    return null;
-  }
-
-  if (normalized.length <= maxLength) {
-    return normalized;
-  }
-
-  return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
-}
-
-function createConversationSummarySeed(conversationId: string) {
   return {
     id: conversationId,
-    titleSeed: null as string | null,
-    titleFromUser: false,
-    preview: null as string | null,
-    createdAt: null as string | null,
-    lastActivityAt: null as string | null,
+    title: NEW_CHAT_TITLE,
+    preview: null,
+    createdAt,
+    lastActivityAt: null,
     messageCount: 0,
     pendingApprovalCount: 0,
   };
-}
-
-function getConversationFallbackTitle(conversationId: string) {
-  if (conversationId === DEFAULT_CONVERSATION_ID) {
-    return "Default conversation";
-  }
-
-  return `Conversation ${conversationId.slice(0, 8)}`;
-}
-
-function touchConversationActivity(
-  conversation: ReturnType<typeof createConversationSummarySeed>,
-  timestamp: string,
-) {
-  if (!conversation.createdAt || timestamp < conversation.createdAt) {
-    conversation.createdAt = timestamp;
-  }
-
-  if (!conversation.lastActivityAt || timestamp > conversation.lastActivityAt) {
-    conversation.lastActivityAt = timestamp;
-  }
->>>>>>> 6622509 (feat: Add conversation management to the agent CLI with new commands and API routes.)
 }
 
 export async function insertMessage({
@@ -480,7 +461,6 @@ export async function maybeSummarizeConversation(
     return null;
   }
 
-  // Preserve the newest raw messages so the provider still sees recent turn-by-turn context.
   const messagesToSummarize = unsummarizedMessages.slice(0, unsummarizedMessages.length - RECENT_RAW_MESSAGES);
   if (messagesToSummarize.length === 0) {
     return null;
@@ -749,6 +729,11 @@ export async function getHistoryPayload(conversationId: string): Promise<History
 }
 
 export async function listConversations(): Promise<ConversationSummary[]> {
+  const conversationRows = db
+    .select()
+    .from(conversations)
+    .orderBy(desc(conversations.updatedAt), desc(conversations.createdAt))
+    .all();
   const messageRows = db
     .select()
     .from(messages)
@@ -765,13 +750,18 @@ export async function listConversations(): Promise<ConversationSummary[]> {
     .orderBy(asc(approvalRequests.createdAt))
     .all();
 
-  const conversations = new Map<string, ReturnType<typeof createConversationSummarySeed>>();
+  const conversationMap = new Map<string, ReturnType<typeof createConversationSummarySeed>>();
+
+  for (const row of conversationRows) {
+    conversationMap.set(row.id, createConversationSummarySeed(row));
+  }
 
   const getConversation = (conversationId: string) => {
-    let conversation = conversations.get(conversationId);
+    let conversation = conversationMap.get(conversationId);
     if (!conversation) {
-      conversation = createConversationSummarySeed(conversationId);
-      conversations.set(conversationId, conversation);
+      conversation = createConversationSummarySeed();
+      conversation.id = conversationId;
+      conversationMap.set(conversationId, conversation);
     }
 
     return conversation;
@@ -785,15 +775,21 @@ export async function listConversations(): Promise<ConversationSummary[]> {
     const truncatedContent = truncateInlineText(row.content, CONVERSATION_PREVIEW_MAX_LENGTH);
     if (truncatedContent) {
       conversation.preview = truncatedContent;
-      const titleCandidate = truncateInlineText(row.content, CONVERSATION_TITLE_MAX_LENGTH);
-      if (titleCandidate) {
-        if (row.role === "user" && !conversation.titleFromUser) {
-          conversation.titleSeed = titleCandidate;
-          conversation.titleFromUser = true;
-        } else if (!conversation.titleSeed) {
-          conversation.titleSeed = titleCandidate;
-        }
-      }
+    }
+
+    const titleCandidate = truncateInlineText(row.content, CONVERSATION_TITLE_MAX_LENGTH);
+    if (!titleCandidate) {
+      continue;
+    }
+
+    if (row.role === "user" && !conversation.titleFromUser) {
+      conversation.titleSeed = titleCandidate;
+      conversation.titleFromUser = true;
+      continue;
+    }
+
+    if (!conversation.titleSeed) {
+      conversation.titleSeed = titleCandidate;
     }
   }
 
@@ -810,11 +806,13 @@ export async function listConversations(): Promise<ConversationSummary[]> {
     }
   }
 
-  if (!conversations.has(DEFAULT_CONVERSATION_ID)) {
-    conversations.set(DEFAULT_CONVERSATION_ID, createConversationSummarySeed(DEFAULT_CONVERSATION_ID));
+  if (!conversationMap.has(DEFAULT_CONVERSATION_ID)) {
+    const defaultConversation = createConversationSummarySeed();
+    defaultConversation.id = DEFAULT_CONVERSATION_ID;
+    conversationMap.set(DEFAULT_CONVERSATION_ID, defaultConversation);
   }
 
-  return [...conversations.values()]
+  return [...conversationMap.values()]
     .map((conversation) => ({
       id: conversation.id,
       title: conversation.titleSeed ?? getConversationFallbackTitle(conversation.id),
