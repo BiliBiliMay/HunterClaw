@@ -99,6 +99,9 @@ export function toToolTimelineRecord(record: ToolExecutionRecord): ToolTimelineR
     status: record.status,
     summary: summarizeToolCall(record.toolName, record.args, record.presentation),
     details: record.presentation,
+    error: record.error,
+    retryable: record.retryable,
+    retryOfExecutionId: record.retryOfExecutionId,
     createdAt: record.createdAt,
     finishedAt: record.finishedAt,
   };

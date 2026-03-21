@@ -58,6 +58,7 @@ sqlite.exec(`
   CREATE TABLE IF NOT EXISTS tool_executions (
     id TEXT PRIMARY KEY NOT NULL,
     conversation_id TEXT NOT NULL,
+    source_message_id TEXT,
     tool_name TEXT NOT NULL,
     args_json TEXT NOT NULL,
     presentation_json TEXT,
@@ -65,6 +66,8 @@ sqlite.exec(`
     status TEXT NOT NULL,
     result_json TEXT,
     error TEXT,
+    retryable INTEGER NOT NULL DEFAULT 0,
+    retry_of_execution_id TEXT,
     created_at TEXT NOT NULL,
     finished_at TEXT
   );
@@ -187,6 +190,27 @@ if (!toolExecutionColumns.some((column) => column.name === "presentation_json"))
   sqlite.exec(`
     ALTER TABLE tool_executions
     ADD COLUMN presentation_json TEXT;
+  `);
+}
+
+if (!toolExecutionColumns.some((column) => column.name === "source_message_id")) {
+  sqlite.exec(`
+    ALTER TABLE tool_executions
+    ADD COLUMN source_message_id TEXT;
+  `);
+}
+
+if (!toolExecutionColumns.some((column) => column.name === "retryable")) {
+  sqlite.exec(`
+    ALTER TABLE tool_executions
+    ADD COLUMN retryable INTEGER NOT NULL DEFAULT 0;
+  `);
+}
+
+if (!toolExecutionColumns.some((column) => column.name === "retry_of_execution_id")) {
+  sqlite.exec(`
+    ALTER TABLE tool_executions
+    ADD COLUMN retry_of_execution_id TEXT;
   `);
 }
 

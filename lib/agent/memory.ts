@@ -91,6 +91,7 @@ function mapToolExecutionRow(row: typeof toolExecutions.$inferSelect): ToolExecu
   return {
     id: row.id,
     conversationId: row.conversationId,
+    sourceMessageId: row.sourceMessageId,
     toolName: row.toolName,
     args: safeJsonParse(row.argsJson, null),
     presentation: safeJsonParse<ToolPresentationDetails | null>(row.presentationJson, null),
@@ -98,6 +99,8 @@ function mapToolExecutionRow(row: typeof toolExecutions.$inferSelect): ToolExecu
     status: row.status as ToolExecutionRecord["status"],
     result: safeJsonParse(row.resultJson, null),
     error: row.error,
+    retryable: row.retryable,
+    retryOfExecutionId: row.retryOfExecutionId,
     createdAt: row.createdAt,
     finishedAt: row.finishedAt,
   };
@@ -597,20 +600,25 @@ export async function resolveApprovalRequest(
 
 export async function logToolExecutionStart({
   conversationId,
+  sourceMessageId,
   toolName,
   args,
   presentation = null,
   riskLevel,
+  retryOfExecutionId = null,
 }: {
   conversationId: string;
+  sourceMessageId: string | null;
   toolName: string;
   args: unknown;
   presentation?: ToolPresentationDetails | null;
   riskLevel: ToolExecutionRecord["riskLevel"];
+  retryOfExecutionId?: string | null;
 }) {
   const execution: ToolExecutionRecord = {
     id: createId("tool"),
     conversationId,
+    sourceMessageId,
     toolName,
     args,
     presentation,
@@ -618,6 +626,8 @@ export async function logToolExecutionStart({
     status: "running",
     result: null,
     error: null,
+    retryable: false,
+    retryOfExecutionId,
     createdAt: nowIso(),
     finishedAt: null,
   };
@@ -628,6 +638,7 @@ export async function logToolExecutionStart({
     .values({
       id: execution.id,
       conversationId,
+      sourceMessageId,
       toolName,
       argsJson: toJsonString(args),
       presentationJson: presentation ? toJsonString(presentation) : null,
@@ -635,6 +646,8 @@ export async function logToolExecutionStart({
       status: execution.status,
       resultJson: null,
       error: null,
+      retryable: false,
+      retryOfExecutionId,
       createdAt: execution.createdAt,
       finishedAt: null,
     })
@@ -660,11 +673,23 @@ export async function finishToolExecution(
           }
         : {}),
       error: result.error,
+      retryable: result.retryable,
       finishedAt,
     })
     .where(eq(toolExecutions.id, executionId))
     .run();
 
+  const row = db
+    .select()
+    .from(toolExecutions)
+    .where(eq(toolExecutions.id, executionId))
+    .limit(1)
+    .all()[0];
+
+  return row ? mapToolExecutionRow(row) : null;
+}
+
+export async function getToolExecutionById(executionId: string) {
   const row = db
     .select()
     .from(toolExecutions)

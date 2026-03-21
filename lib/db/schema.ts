@@ -1,4 +1,4 @@
-import { index, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
 export const conversations = sqliteTable(
   "conversations",
@@ -60,6 +60,7 @@ export const toolExecutions = sqliteTable(
   {
     id: text("id").primaryKey(),
     conversationId: text("conversation_id").notNull(),
+    sourceMessageId: text("source_message_id"),
     toolName: text("tool_name").notNull(),
     argsJson: text("args_json").notNull(),
     presentationJson: text("presentation_json"),
@@ -67,6 +68,8 @@ export const toolExecutions = sqliteTable(
     status: text("status").notNull(),
     resultJson: text("result_json"),
     error: text("error"),
+    retryable: integer("retryable", { mode: "boolean" }).notNull().default(false),
+    retryOfExecutionId: text("retry_of_execution_id"),
     createdAt: text("created_at").notNull(),
     finishedAt: text("finished_at"),
   },

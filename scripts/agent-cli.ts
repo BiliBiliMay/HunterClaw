@@ -5,6 +5,7 @@ import { stdin as input, stdout as output } from "node:process";
 
 import {
   handleApprovalDecision,
+  retryToolExecution,
   runAgentTurn,
 } from "@/lib/agent/loop";
 import {
@@ -146,7 +147,7 @@ function printBanner(conversationId: string) {
   printLine(`Conversation: ${conversationId}`);
   printLine("Type a message, or use /exit to quit.");
   printLine("Reads outside the project root are approval-gated. Shell stays project-scoped.");
-  printLine("Commands: /help, /conversations, /new, /switch <index|conversation-id>, /exit");
+  printLine("Commands: /help, /conversations, /new, /retry <toolExecutionId>, /switch <index|conversation-id>, /exit");
   printLine();
 }
 
@@ -158,6 +159,12 @@ function renderMessage(message: ChatMessage) {
 function renderToolExecution(toolExecution: ToolTimelineRecord) {
   printLine(`Tool ${toolExecution.toolName} [${toolExecution.status}/${toolExecution.riskLevel}]`);
   printLine(`Summary: ${toolExecution.summary}`);
+  if (toolExecution.error) {
+    printLine(`Error: ${toolExecution.error}`);
+  }
+  if (toolExecution.retryable) {
+    printLine(`Retry available: /retry ${toolExecution.id}`);
+  }
   if (toolExecution.toolName === "codeTool" && toolExecution.details) {
     printLine(`Path: ${toolExecution.details.path}`);
     printLine(
@@ -271,6 +278,30 @@ async function switchConversation(
   await printConversationSummary(conversationId);
 }
 
+async function retryExecution(
+  toolExecutionId: string,
+  seen: SeenState,
+) {
+  const trimmedExecutionId = toolExecutionId.trim();
+
+  if (!trimmedExecutionId) {
+    printLine("Usage: /retry <toolExecutionId>");
+    printLine();
+    return;
+  }
+
+  try {
+    const response = await retryToolExecution({
+      toolExecutionId: trimmedExecutionId,
+    });
+
+    renderNewHistory(response, seen);
+  } catch (error) {
+    printLine(`Assistant error: ${toErrorMessage(error)}`);
+    printLine();
+  }
+}
+
 function resolveConversationSelection(
   rawValue: string,
   conversations: ConversationSummary[],
@@ -367,6 +398,8 @@ async function runOneShot(message: string, conversationId: string) {
 
     if (response.status === "approval_required") {
       printLine("One-shot mode reached an approval boundary. Run the interactive CLI to approve or deny it.");
+    } else if (response.status === "retry_required") {
+      printLine("One-shot mode reached a retry boundary. Run the interactive CLI and use /retry <toolExecutionId>.");
     }
   } catch (error) {
     printLine(`Assistant error: ${toErrorMessage(error)}`);
@@ -401,6 +434,7 @@ async function runInteractive(initialConversationId: string) {
         printLine("/help  Show this help");
         printLine("/conversations  List available conversations");
         printLine("/new  Start a fresh conversation");
+        printLine("/retry <toolExecutionId>  Retry a failed tool execution");
         printLine("/switch <index|conversation-id>  Switch threads");
         printLine("/exit  Quit the CLI");
         printLine();
@@ -429,6 +463,11 @@ async function runInteractive(initialConversationId: string) {
         }
 
         await switchConversation(state, conversationId);
+        continue;
+      }
+
+      if (message.startsWith("/retry")) {
+        await retryExecution(message.slice("/retry".length), state.seen);
         continue;
       }
 

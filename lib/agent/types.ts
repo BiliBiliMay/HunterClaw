@@ -60,6 +60,7 @@ export type ToolResult = {
   status: Exclude<ToolExecutionStatus, "running">;
   output: JsonValue | null;
   error: string | null;
+  retryable: boolean;
 };
 
 export type ApprovalRequestRecord = {
@@ -79,6 +80,7 @@ export type ApprovalRequestRecord = {
 export type ToolExecutionRecord = {
   id: string;
   conversationId: string;
+  sourceMessageId: string | null;
   toolName: string;
   args: unknown;
   presentation: ToolPresentationDetails | null;
@@ -86,6 +88,8 @@ export type ToolExecutionRecord = {
   status: ToolExecutionStatus;
   result: unknown;
   error: string | null;
+  retryable: boolean;
+  retryOfExecutionId: string | null;
   createdAt: string;
   finishedAt: string | null;
 };
@@ -97,6 +101,9 @@ export type ToolTimelineRecord = {
   status: ToolExecutionStatus;
   summary: string;
   details: ToolPresentationDetails | null;
+  error: string | null;
+  retryable: boolean;
+  retryOfExecutionId: string | null;
   createdAt: string;
   finishedAt: string | null;
 };
@@ -204,8 +211,9 @@ export type HistoryPayload = {
   usage: ConversationUsageSummary;
 };
 
-export type ChatRouteStatus = "completed" | "approval_required" | "error";
-export type ApproveRouteStatus = "completed" | "approval_required" | "denied" | "error";
+export type ChatRouteStatus = "completed" | "approval_required" | "retry_required" | "error";
+export type ApproveRouteStatus = "completed" | "approval_required" | "retry_required" | "denied" | "error";
+export type RetryRouteStatus = "completed" | "approval_required" | "retry_required" | "error";
 
 export type ChatRouteResponse = HistoryPayload & {
   status: ChatRouteStatus;
@@ -215,6 +223,14 @@ export type ChatRouteResponse = HistoryPayload & {
 
 export type ApproveRouteResponse = HistoryPayload & {
   status: ApproveRouteStatus;
+  pendingApproval?: ApprovalSummaryRecord;
+  toolExecution?: ToolTimelineRecord;
+  error?: string;
+};
+
+export type RetryRouteResponse = HistoryPayload & {
+  status: RetryRouteStatus;
+  pendingApproval?: ApprovalSummaryRecord;
   toolExecution?: ToolTimelineRecord;
   error?: string;
 };

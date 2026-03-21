@@ -51,6 +51,7 @@ export function buildApiDecisionPrompt({
     "- Code edits and browser click/type will be approval-gated by the app; still emit the tool call when needed.",
     "- Prefer fileTool for reading exact file contents, codeTool for creating or editing files, and shellTool for search, discovery, and git inspection.",
     "- If the previous tool result was blocked or errored, either explain the issue or choose a safer alternative.",
+    "- Do not repeat the same tool call with the same arguments after a failed execution unless the user explicitly asked you to retry or the environment has clearly changed.",
     "- If your previous tool call was invalid, correct it on the next step instead of repeating the same mistake.",
     "- When asked what you can do, describe your actual capabilities in this app: inspecting the current repo, approval-gated local file access elsewhere on this computer, making code changes, shell discovery, browser reads, and approval-gated risky actions.",
     "- Do not imply unrestricted machine access. Be clear that non-project local paths require approval and shell stays project-scoped.",

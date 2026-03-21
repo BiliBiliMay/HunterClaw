@@ -7,6 +7,7 @@ The app runs entirely on your machine for the MVP:
 - API-backed LLM provider using your own key and model
 - SQLite-backed memory and tool logs
 - approval flow for medium/high-risk actions
+- retryable tool failure recovery with manual resume
 - local tools for files, shell, and browser automation
 
 ## Stack
@@ -33,6 +34,7 @@ The app runs entirely on your machine for the MVP:
 - conversation token tracking with totals and latest-turn usage
 - terminal CLI for agent-style conversations
 - `GET /api/conversations`, `POST /api/conversations`, `POST /api/chat`, `POST /api/chat/stream`, `POST /api/approve`, `POST /api/approve/stream`, `GET /api/history`
+- `POST /api/tool-executions/retry`, `POST /api/tool-executions/retry/stream`
 - SQLite persistence for messages, summaries, preferences, tool executions, and approvals
 - rolling summary memory for older messages
 - multi-step agent loop that can chain tool calls before answering
@@ -179,6 +181,7 @@ Interactive CLI behavior:
 - approvals are handled inline with `Approve? [y/n]`
 - `/conversations` lists existing threads
 - `/new` starts a fresh thread
+- `/retry <toolExecutionId>` retries a failed tool execution
 - `/switch <index|conversation-id>` changes the active thread
 - `/help` shows CLI help
 - `/exit` or `/quit` exits
@@ -270,6 +273,22 @@ curl -N -X POST http://localhost:3000/api/approve/stream \
 ```
 
 The web UI uses the SSE endpoints so it can render assistant deltas and tool lifecycle updates in real time. The CLI and other simple clients can keep using the JSON endpoints.
+
+Retry a failed tool execution without streaming:
+
+```bash
+curl -X POST http://localhost:3000/api/tool-executions/retry \
+  -H "Content-Type: application/json" \
+  -d '{"toolExecutionId":"tool_execution_id_here"}'
+```
+
+Retry a failed tool execution over SSE:
+
+```bash
+curl -N -X POST http://localhost:3000/api/tool-executions/retry/stream \
+  -H "Content-Type: application/json" \
+  -d '{"toolExecutionId":"tool_execution_id_here"}'
+```
 
 If Next.js chooses a different port, replace `3000` with the actual printed port.
 

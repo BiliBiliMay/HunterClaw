@@ -388,14 +388,20 @@ function MessageBubble({
 }
 
 function ToolActivity({
+  isBusy,
   live,
+  onRetry,
   themeMode,
   toolExecution,
 }: {
+  isBusy: boolean;
   live?: boolean;
+  onRetry: (toolExecutionId: string) => Promise<void>;
   themeMode: ThemeMode;
   toolExecution: ToolTimelineRecord;
 }) {
+  const canRetry = !live && toolExecution.status === "error" && toolExecution.retryable;
+
   return (
     <div className="flex justify-start">
       <div className="max-w-3xl rounded-[1.5rem] border border-[var(--hc-border)] bg-[var(--hc-panel-subtle)] px-4 py-3 text-sm text-[var(--hc-text)] shadow-[var(--hc-shadow)]">
@@ -412,8 +418,25 @@ function ToolActivity({
           </span>
         </div>
         <p className="mt-2 text-sm leading-6 text-[var(--hc-muted)]">{toolExecution.summary}</p>
+        {toolExecution.error ? (
+          <p className="mt-2 rounded-2xl border border-[var(--hc-error-border)] bg-[var(--hc-error-panel)] px-3 py-2 text-sm leading-6 text-[var(--hc-error-text)]">
+            {toolExecution.error}
+          </p>
+        ) : null}
         {toolExecution.toolName === "codeTool" && toolExecution.details ? (
           <CodeChangePreview defaultOpen={Boolean(live)} details={toolExecution.details} themeMode={themeMode} />
+        ) : null}
+        {canRetry ? (
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button
+              className="rounded-full bg-[var(--hc-user-bubble)] px-4 py-2 text-sm font-medium text-[var(--hc-user-bubble-text)] transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={isBusy}
+              onClick={() => onRetry(toolExecution.id)}
+              type="button"
+            >
+              {isBusy ? "Retrying..." : "Retry"}
+            </button>
+          </div>
         ) : null}
       </div>
     </div>
@@ -979,6 +1002,35 @@ export function ChatApp({ providerName }: { providerName: string }) {
     }
   }
 
+  async function handleRetry(toolExecutionId: string) {
+    queueScrollToBottom();
+    setActionLoadingId(toolExecutionId);
+    setError(null);
+    setLivePhase({
+      phase: "running_tool",
+      label: "Retrying failed tool",
+    });
+
+    try {
+      await runStream(
+        "/api/tool-executions/retry/stream",
+        {
+          toolExecutionId,
+        },
+        "Failed to retry tool execution",
+      );
+    } catch (retryError) {
+      if (retryError instanceof Error && retryError.name === "AbortError") {
+        return;
+      }
+
+      setError(retryError instanceof Error ? retryError.message : "Unexpected error.");
+      setActionLoadingId(null);
+      clearLiveState();
+      await refreshConversationsSafely();
+    }
+  }
+
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) {
       return;
@@ -1203,8 +1255,10 @@ export function ChatApp({ providerName }: { providerName: string }) {
                   if (entry.type === "tool") {
                     return (
                       <ToolActivity
+                        isBusy={actionLoadingId === entry.toolExecution.id}
                         key={`${entry.toolExecution.id}-${entry.live ? "live" : "history"}`}
                         live={entry.live}
+                        onRetry={handleRetry}
                         themeMode={themeMode}
                         toolExecution={entry.toolExecution}
                       />

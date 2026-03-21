@@ -6,6 +6,7 @@ import type {
   ChatStreamEvent,
   HistoryPayload,
   ProviderContext,
+  RetryRouteResponse,
   ToolExecutionRecord,
   ToolResult,
 } from "@/lib/agent/types";
@@ -18,6 +19,7 @@ import {
   getHistoryPayload,
   getLatestUserMessage,
   getMessageById,
+  getToolExecutionById,
   insertMessage,
   loadConversationMemory,
   logLlmUsageEvent,
@@ -36,19 +38,113 @@ import {
 import type { ToolPresentationDetails } from "@/lib/agent/types";
 import { validateToolCall } from "@/lib/tools/registry";
 import { prepareCodeToolOperation } from "@/lib/tools/codeTool";
-import { toErrorMessage } from "@/lib/utils";
+import { toErrorMessage, toStableJsonString } from "@/lib/utils";
 
 const LOOP_LIMIT = 8;
+const TRANSIENT_ERROR_CODES = new Set([
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EAI_AGAIN",
+  "ENETDOWN",
+  "ENETRESET",
+  "ENETUNREACH",
+  "ETIMEDOUT",
+]);
+const TRANSIENT_ERROR_PATTERNS = [
+  /timed out/i,
+  /temporary/i,
+  /network error/i,
+  /net::ERR_/i,
+];
+const TRANSIENT_BROWSER_ERROR_PATTERNS = [
+  /Target page, context or browser has been closed/i,
+  /browser has been closed/i,
+  /page has been closed/i,
+  /context has been closed/i,
+  /Execution context was destroyed/i,
+];
 
 type TurnEventSink = (event: ChatStreamEvent) => Promise<void> | void;
 
-function toHistoryPayload(response: ChatRouteResponse | ApproveRouteResponse): HistoryPayload {
+function toHistoryPayload(
+  response: ChatRouteResponse | ApproveRouteResponse | RetryRouteResponse,
+): HistoryPayload {
   return {
     messages: response.messages,
     toolExecutions: response.toolExecutions,
     pendingApprovals: response.pendingApprovals,
     usage: response.usage,
   };
+}
+
+function getErrorCode(error: unknown) {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof (error as { code?: unknown }).code === "string"
+  ) {
+    return (error as { code: string }).code;
+  }
+
+  return null;
+}
+
+function isRetryableToolFailure(toolName: string, message: string, error: unknown) {
+  if (message.startsWith("Blocked:")) {
+    return false;
+  }
+
+  const code = getErrorCode(error);
+  if (code && TRANSIENT_ERROR_CODES.has(code)) {
+    return true;
+  }
+
+  if (toolName === "browserTool") {
+    return [...TRANSIENT_ERROR_PATTERNS, ...TRANSIENT_BROWSER_ERROR_PATTERNS]
+      .some((pattern) => pattern.test(message));
+  }
+
+  return TRANSIENT_ERROR_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+function formatToolFailureMessage(toolResult: ToolResult) {
+  const suffix = toolResult.error?.trim() ? `: ${toolResult.error.trim()}` : ".";
+
+  if (toolResult.status === "blocked") {
+    return `I couldn't finish because ${toolResult.toolName} was blocked${suffix}`;
+  }
+
+  if (toolResult.status === "error") {
+    return `I couldn't finish because ${toolResult.toolName} failed${suffix}`;
+  }
+
+  return "I couldn't finish the task.";
+}
+
+function formatRetryRequiredMessage(toolResult: ToolResult) {
+  return `${formatToolFailureMessage(toolResult)} Retry the failed tool execution to continue.`;
+}
+
+function isRepeatedFailedToolCall(
+  lastToolResult: ToolResult | undefined,
+  lastExecution: ToolExecutionRecord | null,
+  toolName: string,
+  args: unknown,
+) {
+  if (!lastToolResult || !lastExecution) {
+    return false;
+  }
+
+  return (
+    lastExecution.status === "error" &&
+    lastExecution.retryable &&
+    lastToolResult.status === "error" &&
+    lastToolResult.retryable &&
+    lastToolResult.toolName === toolName &&
+    toStableJsonString(lastToolResult.args) === toStableJsonString(args)
+  );
 }
 
 async function emitEvent(onEvent: TurnEventSink | undefined, event: ChatStreamEvent) {
@@ -122,39 +218,47 @@ async function buildApproveResponse(
   conversationId: string,
   status: ApproveRouteResponse["status"],
   toolExecution?: ToolExecutionRecord,
+  pendingApproval?: ApprovalRequestRecord,
 ): Promise<ApproveRouteResponse> {
   const history = await getHistoryPayload(conversationId);
 
   return {
     status,
     ...history,
+    pendingApproval: pendingApproval ? toApprovalSummaryRecord(pendingApproval) : undefined,
     toolExecution: toolExecution ? toToolTimelineRecord(toolExecution) : undefined,
   };
 }
 
-async function executeTool({
+async function executeToolAttempt({
   conversationId,
+  sourceMessageId,
   toolName,
   args,
   presentation,
   riskLevel,
+  retryOfExecutionId,
   onEvent,
 }: {
   conversationId: string;
+  sourceMessageId: string | null;
   toolName: string;
   args: unknown;
   presentation?: ToolPresentationDetails | null;
   riskLevel: ToolResult["riskLevel"];
+  retryOfExecutionId?: string | null;
   onEvent?: TurnEventSink;
 }) {
   await emitPhase(onEvent, "running_tool", `Running ${toolName}`);
 
   const execution = await logToolExecutionStart({
     conversationId,
+    sourceMessageId,
     toolName,
     args,
     presentation,
     riskLevel,
+    retryOfExecutionId,
   });
 
   await emitEvent(onEvent, {
@@ -174,6 +278,7 @@ async function executeTool({
       status: "success",
       output,
       error: null,
+      retryable: false,
     };
   } catch (error) {
     const message = toErrorMessage(error);
@@ -184,6 +289,7 @@ async function executeTool({
       status: message.startsWith("Blocked:") ? "blocked" : "error",
       output: null,
       error: message,
+      retryable: isRetryableToolFailure(toolName, message, error),
     };
   }
 
@@ -202,7 +308,57 @@ async function executeTool({
   };
 }
 
-async function completeTurn<T extends ChatRouteResponse | ApproveRouteResponse>(
+async function executeToolWithRecovery({
+  conversationId,
+  sourceMessageId,
+  toolName,
+  args,
+  presentation,
+  riskLevel,
+  retryOfExecutionId,
+  onEvent,
+}: {
+  conversationId: string;
+  sourceMessageId: string | null;
+  toolName: string;
+  args: unknown;
+  presentation?: ToolPresentationDetails | null;
+  riskLevel: ToolResult["riskLevel"];
+  retryOfExecutionId?: string | null;
+  onEvent?: TurnEventSink;
+}) {
+  let executionResult = await executeToolAttempt({
+    conversationId,
+    sourceMessageId,
+    toolName,
+    args,
+    presentation,
+    riskLevel,
+    retryOfExecutionId,
+    onEvent,
+  });
+
+  if (
+    executionResult.toolResult.status === "error" &&
+    executionResult.toolResult.retryable &&
+    executionResult.storedExecution
+  ) {
+    executionResult = await executeToolAttempt({
+      conversationId,
+      sourceMessageId,
+      toolName,
+      args,
+      presentation,
+      riskLevel,
+      retryOfExecutionId: executionResult.storedExecution.id,
+      onEvent,
+    });
+  }
+
+  return executionResult;
+}
+
+async function completeTurn<T extends ChatRouteResponse | ApproveRouteResponse | RetryRouteResponse>(
   response: T,
   onEvent?: TurnEventSink,
 ): Promise<T> {
@@ -213,6 +369,26 @@ async function completeTurn<T extends ChatRouteResponse | ApproveRouteResponse>(
   });
 
   return response;
+}
+
+async function requireToolRetryTurn(
+  conversationId: string,
+  provider: AgentProvider,
+  sourceMessageId: string | null,
+  toolResult: ToolResult,
+  onEvent?: TurnEventSink,
+) {
+  await recordAssistantError({
+    conversationId,
+    provider,
+    sourceMessageId,
+    content: formatRetryRequiredMessage(toolResult),
+  });
+  await emitUsageUpdate(conversationId, onEvent);
+
+  const response = await buildChatResponse(conversationId, "retry_required");
+
+  return completeTurn(response, onEvent);
 }
 
 async function failTurn(
@@ -298,6 +474,7 @@ async function continueAgentLoop({
   latestUserMessageId,
   latestUserMessage,
   initialToolResult,
+  initialExecution,
   onEvent,
 }: {
   conversationId: string;
@@ -305,9 +482,11 @@ async function continueAgentLoop({
   latestUserMessageId: string | null;
   latestUserMessage: string;
   initialToolResult?: ToolResult;
+  initialExecution?: ToolExecutionRecord | null;
   onEvent?: TurnEventSink;
 }) {
   let lastToolResult = initialToolResult;
+  let lastExecution = initialExecution ?? null;
 
   for (let index = 0; index < LOOP_LIMIT; index += 1) {
     const memory = await loadConversationMemory(conversationId);
@@ -376,8 +555,20 @@ async function continueAgentLoop({
         status: "error",
         output: null,
         error: `Invalid ${decision.toolName} call: ${toErrorMessage(error)}`,
+        retryable: false,
       };
+      lastExecution = null;
       continue;
+    }
+
+    if (isRepeatedFailedToolCall(lastToolResult, lastExecution, decision.toolName, parsedArgs)) {
+      return requireToolRetryTurn(
+        conversationId,
+        provider,
+        latestUserMessageId,
+        lastToolResult!,
+        onEvent,
+      );
     }
 
     try {
@@ -416,12 +607,15 @@ async function continueAgentLoop({
         status: "error",
         output: null,
         error: `Safety evaluation failed for ${decision.toolName}: ${toErrorMessage(error)}`,
+        retryable: false,
       };
+      lastExecution = null;
       continue;
     }
 
-    const executionResult = await executeTool({
+    const executionResult = await executeToolWithRecovery({
       conversationId,
+      sourceMessageId: latestUserMessageId,
       toolName: decision.toolName,
       args: parsedArgs,
       presentation,
@@ -430,13 +624,24 @@ async function continueAgentLoop({
     });
 
     lastToolResult = executionResult.toolResult;
+    lastExecution = executionResult.storedExecution;
+  }
+
+  if (lastToolResult && lastExecution?.status === "error" && lastExecution.retryable) {
+    return requireToolRetryTurn(
+      conversationId,
+      provider,
+      latestUserMessageId,
+      lastToolResult,
+      onEvent,
+    );
   }
 
   return failTurn(
     conversationId,
     provider,
     latestUserMessageId,
-    "I hit the step limit before I could finish. Ask me to continue or narrow the task.",
+    lastToolResult ? formatToolFailureMessage(lastToolResult) : "I hit the step limit before I could finish.",
     onEvent,
   );
 }
@@ -532,8 +737,9 @@ export async function handleApprovalDecision({
     ? await getMessageById(updatedApproval.sourceMessageId)
     : null;
   const latestUserMessage = sourceMessage?.content ?? await getLatestUserMessage(updatedApproval.conversationId);
-  const executionResult = await executeTool({
+  const executionResult = await executeToolWithRecovery({
     conversationId: updatedApproval.conversationId,
+    sourceMessageId: sourceMessage?.id ?? updatedApproval.sourceMessageId,
     toolName: updatedApproval.toolName,
     args: updatedApproval.args,
     presentation: updatedApproval.presentation,
@@ -546,11 +752,13 @@ export async function handleApprovalDecision({
     latestUserMessageId: sourceMessage?.id ?? updatedApproval.sourceMessageId,
     latestUserMessage,
     initialToolResult: executionResult.toolResult,
+    initialExecution: executionResult.storedExecution,
   });
 
   return {
     ...continuedResponse,
     status: continuedResponse.status,
+    pendingApproval: continuedResponse.pendingApproval,
     toolExecution: executionResult.storedExecution
       ? toToolTimelineRecord(executionResult.storedExecution)
       : undefined,
@@ -611,8 +819,9 @@ export async function streamApprovalDecision({
     ? await getMessageById(updatedApproval.sourceMessageId)
     : null;
   const latestUserMessage = sourceMessage?.content ?? await getLatestUserMessage(updatedApproval.conversationId);
-  const executionResult = await executeTool({
+  const executionResult = await executeToolWithRecovery({
     conversationId: updatedApproval.conversationId,
+    sourceMessageId: sourceMessage?.id ?? updatedApproval.sourceMessageId,
     toolName: updatedApproval.toolName,
     args: updatedApproval.args,
     presentation: updatedApproval.presentation,
@@ -626,6 +835,112 @@ export async function streamApprovalDecision({
     latestUserMessageId: sourceMessage?.id ?? updatedApproval.sourceMessageId,
     latestUserMessage,
     initialToolResult: executionResult.toolResult,
+    initialExecution: executionResult.storedExecution,
     onEvent,
   });
+}
+
+async function getRetryExecutionContext(toolExecutionId: string) {
+  const toolExecution = await getToolExecutionById(toolExecutionId);
+
+  if (!toolExecution) {
+    throw new Error("Tool execution not found.");
+  }
+
+  if (toolExecution.status !== "error") {
+    throw new Error("Only failed tool executions can be retried.");
+  }
+
+  if (!toolExecution.retryable) {
+    throw new Error("This tool execution is not retryable.");
+  }
+
+  const sourceMessage = toolExecution.sourceMessageId
+    ? await getMessageById(toolExecution.sourceMessageId)
+    : null;
+  const latestUserMessage = sourceMessage?.content ?? await getLatestUserMessage(toolExecution.conversationId);
+
+  return {
+    toolExecution,
+    latestUserMessageId: sourceMessage?.id ?? toolExecution.sourceMessageId,
+    latestUserMessage,
+  };
+}
+
+export async function retryToolExecution({
+  toolExecutionId,
+  provider = getDefaultProvider(),
+}: {
+  toolExecutionId: string;
+  provider?: AgentProvider;
+}): Promise<RetryRouteResponse> {
+  const retryContext = await getRetryExecutionContext(toolExecutionId);
+  const executionResult = await executeToolWithRecovery({
+    conversationId: retryContext.toolExecution.conversationId,
+    sourceMessageId: retryContext.latestUserMessageId,
+    toolName: retryContext.toolExecution.toolName,
+    args: retryContext.toolExecution.args,
+    presentation: retryContext.toolExecution.presentation,
+    riskLevel: retryContext.toolExecution.riskLevel,
+    retryOfExecutionId: retryContext.toolExecution.id,
+  });
+
+  const continuedResponse = await continueAgentLoop({
+    conversationId: retryContext.toolExecution.conversationId,
+    provider,
+    latestUserMessageId: retryContext.latestUserMessageId,
+    latestUserMessage: retryContext.latestUserMessage,
+    initialToolResult: executionResult.toolResult,
+    initialExecution: executionResult.storedExecution,
+  });
+
+  return {
+    ...continuedResponse,
+    status: continuedResponse.status,
+    pendingApproval: continuedResponse.pendingApproval,
+    toolExecution: executionResult.storedExecution
+      ? toToolTimelineRecord(executionResult.storedExecution)
+      : undefined,
+  };
+}
+
+export async function streamRetryToolExecution({
+  toolExecutionId,
+  provider = getDefaultProvider(),
+  onEvent,
+}: {
+  toolExecutionId: string;
+  provider?: AgentProvider;
+  onEvent: TurnEventSink;
+}) {
+  const retryContext = await getRetryExecutionContext(toolExecutionId);
+  const executionResult = await executeToolWithRecovery({
+    conversationId: retryContext.toolExecution.conversationId,
+    sourceMessageId: retryContext.latestUserMessageId,
+    toolName: retryContext.toolExecution.toolName,
+    args: retryContext.toolExecution.args,
+    presentation: retryContext.toolExecution.presentation,
+    riskLevel: retryContext.toolExecution.riskLevel,
+    retryOfExecutionId: retryContext.toolExecution.id,
+    onEvent,
+  });
+
+  const continuedResponse = await continueAgentLoop({
+    conversationId: retryContext.toolExecution.conversationId,
+    provider,
+    latestUserMessageId: retryContext.latestUserMessageId,
+    latestUserMessage: retryContext.latestUserMessage,
+    initialToolResult: executionResult.toolResult,
+    initialExecution: executionResult.storedExecution,
+    onEvent,
+  });
+
+  return {
+    ...continuedResponse,
+    status: continuedResponse.status,
+    pendingApproval: continuedResponse.pendingApproval,
+    toolExecution: executionResult.storedExecution
+      ? toToolTimelineRecord(executionResult.storedExecution)
+      : undefined,
+  };
 }

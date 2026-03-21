@@ -220,6 +220,7 @@ test("approval and tool history keep the same code preview snapshot", async () =
   const storedApproval = await getApprovalRequest(approval.id);
   const execution = await logToolExecutionStart({
     conversationId,
+    sourceMessageId: null,
     toolName: "codeTool",
     args: {
       action: "applyPatch",
@@ -241,6 +242,7 @@ test("approval and tool history keep the same code preview snapshot", async () =
       path: relativePath,
     },
     error: null,
+    retryable: false,
   };
   await finishToolExecution(execution.id, toolResult, prepared.presentation);
 
@@ -265,6 +267,7 @@ test("provider formatting stays compact and excludes before/after snippets", asy
   });
   const execution = await logToolExecutionStart({
     conversationId,
+    sourceMessageId: null,
     toolName: "codeTool",
     args: {
       action: "applyPatch",
@@ -290,6 +293,7 @@ test("provider formatting stays compact and excludes before/after snippets", asy
         deletions: prepared.presentation.stats.deletions,
       },
       error: null,
+      retryable: false,
     },
     prepared.presentation,
   );
