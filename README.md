@@ -62,7 +62,7 @@ lib/
   llm/
   tools/
 
-data/workspace/
+data/workspace/  # optional sample content
 scripts/
 ```
 
@@ -74,7 +74,7 @@ scripts/
 npm install
 ```
 
-### 2. Create the database and workspace
+### 2. Create the database and sample content
 
 ```bash
 npm run db:setup
@@ -82,7 +82,7 @@ npm run db:setup
 
 This creates:
 - `data/agent.db`
-- `data/workspace/welcome.txt`
+- `data/workspace/welcome.txt` as optional example content
 
 ### 3. Install Playwright Chromium
 
@@ -126,7 +126,7 @@ AGENT_FS_ROOT=.
 AUTO_APPROVE_FILE_WRITES=false
 ```
 
-`AGENT_FS_ROOT` controls the primary project root for relative file paths and the shell tool working directory. By default it is the repo root.
+`AGENT_FS_ROOT` controls the primary root for relative file paths and the shell tool working directory. By default it is the repo root, but it may also point at another real local project directory.
 
 Behavior with that setting:
 - relative file paths are resolved from `AGENT_FS_ROOT`
@@ -134,7 +134,10 @@ Behavior with that setting:
 - read/list access outside `AGENT_FS_ROOT` is allowed, but requires approval
 - writes inside `AGENT_FS_ROOT` are medium risk
 - writes outside `AGENT_FS_ROOT` are high risk
-- shell commands still run with `AGENT_FS_ROOT` as the cwd and remain project-scoped
+- shell commands run with `AGENT_FS_ROOT` as the default cwd
+- shell commands may target another cwd, but using a cwd outside `AGENT_FS_ROOT` requires approval
+
+If `AGENT_FS_ROOT` points outside this repo, the target directory must already exist.
 
 ## Run modes
 
@@ -299,7 +302,7 @@ If Next.js chooses a different port, replace `3000` with the actual printed port
 - `npm run start` - run the production server after build
 - `npm test` - run the focused code tool test suite
 - `npm run typecheck` - run TypeScript checks
-- `npm run db:setup` - create SQLite tables and seed `data/workspace/welcome.txt`
+- `npm run db:setup` - create SQLite tables and seed sample content in `data/workspace/welcome.txt`
 - `npm run agent:cli` - run the terminal agent REPL or one-shot CLI
 - `npm run playwright:install` - install Chromium for Playwright
 
@@ -335,7 +338,9 @@ There is no local parser fallback anymore. This app expects a real LLM-backed pr
 - relative file access is based on `AGENT_FS_ROOT`
 - reading or listing local paths outside `AGENT_FS_ROOT` requires approval
 - writing local paths outside `AGENT_FS_ROOT` is high risk and requires approval
-- all shell commands run with `AGENT_FS_ROOT` as the cwd and remain project-scoped
+- all shell commands are readonly
+- shell commands run with `AGENT_FS_ROOT` as the default cwd
+- shell commands using a cwd outside `AGENT_FS_ROOT` require approval
 - by default, `AGENT_FS_ROOT` is the repo root so the agent can inspect the codebase itself
 
 Optional override:
@@ -344,7 +349,7 @@ Optional override:
 ## Persistence
 
 - SQLite database: `data/agent.db`
-- sample workspace folder: `data/workspace`
+- optional sample workspace folder: `data/workspace`
 - the DB file is ignored by git
 
 The same SQLite state is shared across:
@@ -406,7 +411,7 @@ npm run db:setup
 
 ### You expected repo-root file access
 
-That is now the default. `AGENT_FS_ROOT` still defaults to the repo root, which keeps low-risk autonomous access focused on the current project. If you want a narrower sandbox, set `AGENT_FS_ROOT` to a subdirectory. If the agent needs to inspect another local path, it can request approval first.
+That is now the default. `AGENT_FS_ROOT` still defaults to the repo root, which keeps low-risk autonomous access focused on the current project. If you want a narrower sandbox, set `AGENT_FS_ROOT` to a subdirectory. If you want the agent to operate directly on another local project, set `AGENT_FS_ROOT` to that absolute path first, or keep the repo root as primary and let the agent request approval for off-root file reads or shell cwd access.
 
 ## Provider status
 

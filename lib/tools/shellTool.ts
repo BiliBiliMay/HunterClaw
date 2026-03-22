@@ -1,9 +1,13 @@
+import fs from "node:fs";
+import fsPromises from "node:fs/promises";
 import { spawn } from "node:child_process";
 
 import { z } from "zod";
 
 import type { JsonValue, RiskLevel } from "@/lib/agent/types";
-import { AGENT_FS_ROOT } from "@/lib/db/client";
+import { AGENT_FS_ROOT, isPathWithinRoot } from "@/lib/db/client";
+import type { FileAccessScope } from "@/lib/tools/fileTool";
+import { resolveFilePath } from "@/lib/tools/fileTool";
 
 const BLOCKED_OPERATOR_PATTERN = /[|><;&`]/;
 const BLOCKED_FRAGMENT_PATTERN = /\$\(|\n|\r/;
@@ -49,9 +53,15 @@ const ALLOWED_GIT_SUBCOMMANDS = new Set([
 
 export const shellToolSchema = z.object({
   command: z.string().min(1),
+  cwd: z.string().min(1).optional(),
 });
 
 export type ShellToolArgs = z.infer<typeof shellToolSchema>;
+export type ResolvedShellToolCwd = {
+  requestedCwd: string;
+  resolvedCwd: string;
+  scope: FileAccessScope;
+};
 
 function stripQuotes(token: string) {
   if (
@@ -82,7 +92,7 @@ function assertNoPathEscape(tokens: string[]) {
       token.startsWith("/") ||
       token.startsWith("~")
     ) {
-      throw new Error(`Blocked: path '${token}' escapes the project root.`);
+      throw new Error(`Blocked: path '${token}' escapes the configured shell directory.`);
     }
   }
 }
@@ -128,10 +138,66 @@ function validateCommand(command: string) {
   };
 }
 
-async function runSpawn(command: string, args: string[]) {
+export function resolveShellToolCwd(inputCwd?: string): ResolvedShellToolCwd {
+  const target = resolveFilePath(inputCwd ?? ".");
+
+  return {
+    requestedCwd: inputCwd ?? ".",
+    resolvedCwd: target.resolvedPath,
+    scope: target.scope,
+  };
+}
+
+function normalizeExistingCwd(resolved: ResolvedShellToolCwd) {
+  const realCwd = fs.realpathSync.native(resolved.resolvedCwd);
+  const canonicalRoot = fs.realpathSync.native(AGENT_FS_ROOT);
+
+  return {
+    ...resolved,
+    resolvedCwd: realCwd,
+    scope: isPathWithinRoot(realCwd, canonicalRoot) ? "project" : "host",
+  };
+}
+
+async function assertWorkingDirectory(resolved: ResolvedShellToolCwd) {
+  let stats;
+
+  try {
+    stats = await fsPromises.stat(resolved.resolvedCwd);
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      throw new Error(`Working directory does not exist: ${resolved.requestedCwd}`);
+    }
+
+    throw error;
+  }
+
+  if (!stats.isDirectory()) {
+    throw new Error(`Working directory is not a directory: ${resolved.requestedCwd}`);
+  }
+
+  return normalizeExistingCwd(resolved);
+}
+
+export function getShellToolRiskLevel(args: ShellToolArgs): RiskLevel {
+  const resolved = resolveShellToolCwd(args.cwd);
+
+  try {
+    return normalizeExistingCwd(resolved).scope === "project" ? "low" : "medium";
+  } catch {
+    return resolved.scope === "project" ? "low" : "medium";
+  }
+}
+
+async function runSpawn(command: string, args: string[], cwd: string) {
   return new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve, reject) => {
     const child = spawn(command, args, {
-      cwd: AGENT_FS_ROOT,
+      cwd,
       env: process.env,
       shell: false,
     });
@@ -170,14 +236,15 @@ async function runSpawn(command: string, args: string[]) {
 
 export const shellTool = {
   name: "shellTool",
-  description: "Run a small allowlist of readonly shell commands inside the project root.",
+  description: "Run a small allowlist of readonly shell commands from the configured root or an approved cwd.",
   schema: shellToolSchema,
-  getRiskLevel(_args: ShellToolArgs): RiskLevel {
-    return "low";
+  getRiskLevel(args: ShellToolArgs): RiskLevel {
+    return getShellToolRiskLevel(args);
   },
   async execute(args: ShellToolArgs): Promise<JsonValue> {
+    const target = await assertWorkingDirectory(resolveShellToolCwd(args.cwd));
     const validated = validateCommand(args.command);
-    const result = await runSpawn(validated.executable, validated.args);
+    const result = await runSpawn(validated.executable, validated.args, target.resolvedCwd);
 
     if (result.exitCode !== 0) {
       throw new Error(result.stderr.trim() || `Shell command exited with code ${result.exitCode}.`);
@@ -185,6 +252,9 @@ export const shellTool = {
 
     return {
       command: validated.command,
+      cwd: target.requestedCwd,
+      resolvedCwd: target.resolvedCwd,
+      scope: target.scope,
       stdout: result.stdout.trimEnd(),
       stderr: result.stderr.trimEnd(),
       exitCode: result.exitCode,

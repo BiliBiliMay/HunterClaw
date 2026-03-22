@@ -34,6 +34,7 @@ test("validateToolCall accepts valid arguments and applies schema defaults", () 
   });
   const shellValidation = validateToolCall("shellTool", {
     command: "pwd",
+    cwd: "/Users/example/project",
   });
   const browserValidation = validateToolCall("browserTool", {
     action: "openPage",
@@ -47,6 +48,10 @@ test("validateToolCall accepts valid arguments and applies schema defaults", () 
   assert.equal(fileValidation.tool.name, "fileTool");
   assert.equal(codeValidation.tool.name, "codeTool");
   assert.equal(shellValidation.tool.name, "shellTool");
+  assert.deepEqual(shellValidation.parsedArgs, {
+    command: "pwd",
+    cwd: "/Users/example/project",
+  });
   assert.equal(browserValidation.tool.name, "browserTool");
 });
 

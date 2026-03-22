@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
 import test, { after, before } from "node:test";
 
 import type { ChatStreamEvent } from "@/lib/agent/types";
@@ -395,6 +396,62 @@ test("handleApprovalDecision executes the approved tool and resumes the loop", a
   assert.equal(await harness.readWorkspaceFile("drafts/final.txt"), "Approved content.\n");
   assert.equal(response.pendingApprovals.length, 0);
   assert.equal(response.messages.at(-1)?.content, "The file has been written.");
+});
+
+test("handleApprovalDecision executes an approved off-root shell command and resumes the loop", async () => {
+  const conversationId = createConversationId("approval-shell-off-root");
+  const externalRoot = await harness.createHostDirectory("external-shell-project");
+  const resolvedExternalRoot = await fs.realpath(externalRoot);
+  const provider = createFakeProvider({
+    planDecisions: [
+      createDecisionResult({
+        type: "tool_call",
+        toolName: "shellTool",
+        args: {
+          command: "pwd",
+          cwd: externalRoot,
+        },
+        reason: "Inspect the external project directory.",
+      }),
+      (context) => {
+        assert.equal(context.lastToolResult?.status, "success");
+        assert.equal(
+          (context.lastToolResult?.output as { stdout: string }).stdout,
+          resolvedExternalRoot,
+        );
+        return createDecisionResult({
+          type: "respond",
+          reason: "The shell inspection has completed.",
+        });
+      },
+    ],
+    responses: [
+      () => createResponseResult("The external project directory was inspected."),
+    ],
+  });
+
+  const pendingResponse = await runAgentTurn({
+    message: "Inspect the external project directory.",
+    conversationId,
+    provider,
+  });
+
+  assert.equal(pendingResponse.status, "approval_required");
+  assert.ok(pendingResponse.pendingApproval);
+  assert.equal(pendingResponse.pendingApproval?.toolName, "shellTool");
+  assert.match(pendingResponse.pendingApproval?.summary ?? "", /Running pwd in/);
+
+  const response = await handleApprovalDecision({
+    requestId: pendingResponse.pendingApproval!.id,
+    decision: "approve",
+    provider,
+  });
+
+  assert.equal(response.status, "completed");
+  assert.equal(response.toolExecution?.toolName, "shellTool");
+  assert.equal(response.toolExecution?.status, "success");
+  assert.equal(response.pendingApprovals.length, 0);
+  assert.equal(response.messages.at(-1)?.content, "The external project directory was inspected.");
 });
 
 test("handleApprovalDecision records a denial without mutating the workspace", async () => {

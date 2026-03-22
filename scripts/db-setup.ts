@@ -6,11 +6,11 @@ import Database from "better-sqlite3";
 import { deriveConversationTitle, NEW_CHAT_TITLE } from "@/lib/agent/conversations";
 
 const dbPath = path.resolve(process.cwd(), process.env.AGENT_DB_PATH ?? "./data/agent.db");
-const workspaceRoot = path.resolve(process.cwd(), "data/workspace");
-const welcomeFilePath = path.join(workspaceRoot, "welcome.txt");
+const sampleWorkspaceRoot = path.resolve(process.cwd(), "data/workspace");
+const welcomeFilePath = path.join(sampleWorkspaceRoot, "welcome.txt");
 
 fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-fs.mkdirSync(workspaceRoot, { recursive: true });
+fs.mkdirSync(sampleWorkspaceRoot, { recursive: true });
 
 const sqlite = new Database(dbPath);
 
@@ -275,7 +275,8 @@ if (!fs.existsSync(welcomeFilePath)) {
     [
       "Welcome to HunterClaw.",
       "",
-      "This is the local workspace that the MVP agent can read, list, and write inside.",
+      "This is sample workspace content created by db:setup.",
+      "It is not the active root unless you point AGENT_FS_ROOT at data/workspace.",
       "Try asking:",
       "- list files",
       "- read file welcome.txt",
@@ -286,4 +287,4 @@ if (!fs.existsSync(welcomeFilePath)) {
 }
 
 console.log(`Database ready at ${dbPath}`);
-console.log(`Workspace ready at ${workspaceRoot}`);
+console.log(`Sample workspace ready at ${sampleWorkspaceRoot}`);

@@ -9,7 +9,6 @@ import * as schema from "@/lib/db/schema";
 
 export let PROJECT_ROOT = path.resolve(process.cwd());
 export let AGENT_FS_ROOT = path.resolve(PROJECT_ROOT, process.env.AGENT_FS_ROOT ?? ".");
-export let WORKSPACE_ROOT = path.resolve(PROJECT_ROOT, "data/workspace");
 export let dbPath = path.resolve(process.cwd(), process.env.AGENT_DB_PATH ?? "./data/agent.db");
 
 declare global {
@@ -19,6 +18,31 @@ declare global {
 
 function createDb(client: Database.Database) {
   return drizzle(client, { schema });
+}
+
+export function isPathWithinRoot(targetPath: string, rootPath: string) {
+  const rootWithSeparator = `${rootPath}${path.sep}`;
+  return targetPath === rootPath || targetPath.startsWith(rootWithSeparator);
+}
+
+export function ensureAgentFsRootPath(rootPath: string, projectRoot: string) {
+  if (isPathWithinRoot(rootPath, projectRoot)) {
+    fs.mkdirSync(rootPath, { recursive: true });
+    return;
+  }
+
+  if (!fs.existsSync(rootPath)) {
+    throw new Error(
+      `AGENT_FS_ROOT must point to an existing directory when outside the project root: ${rootPath}`,
+    );
+  }
+
+  const stats = fs.statSync(rootPath);
+  if (!stats.isDirectory()) {
+    throw new Error(
+      `AGENT_FS_ROOT must point to a directory when outside the project root: ${rootPath}`,
+    );
+  }
 }
 
 function resolveClientPaths({
@@ -31,13 +55,11 @@ function resolveClientPaths({
   PROJECT_ROOT = path.resolve(process.cwd());
   dbPath = path.resolve(PROJECT_ROOT, nextDbPath ?? process.env.AGENT_DB_PATH ?? "./data/agent.db");
   AGENT_FS_ROOT = path.resolve(PROJECT_ROOT, nextFsRoot ?? process.env.AGENT_FS_ROOT ?? ".");
-  WORKSPACE_ROOT = path.resolve(PROJECT_ROOT, "data/workspace");
 }
 
 function ensurePaths() {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-  fs.mkdirSync(AGENT_FS_ROOT, { recursive: true });
-  fs.mkdirSync(WORKSPACE_ROOT, { recursive: true });
+  ensureAgentFsRootPath(AGENT_FS_ROOT, PROJECT_ROOT);
 }
 
 function hasColumn(client: Database.Database, tableName: string, columnName: string) {

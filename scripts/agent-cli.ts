@@ -146,7 +146,7 @@ function printBanner(conversationId: string) {
   printLine(`Provider: ${getConfiguredProviderName()}`);
   printLine(`Conversation: ${conversationId}`);
   printLine("Type a message, or use /exit to quit.");
-  printLine("Reads outside the project root are approval-gated. Shell stays project-scoped.");
+  printLine("Reads outside the primary root are approval-gated. Off-root shell inspection also needs approval.");
   printLine("Commands: /help, /conversations, /new, /retry <toolExecutionId>, /switch <index|conversation-id>, /exit");
   printLine();
 }

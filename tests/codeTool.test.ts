@@ -41,6 +41,7 @@ before(async () => {
   tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "hunterclaw-tests-"));
   fsRoot = path.join(tempRoot, "workspace");
   dbPath = path.join(tempRoot, "agent.db");
+  await fs.mkdir(fsRoot, { recursive: true });
 
   reinitializeDbClientForTests({
     nextDbPath: dbPath,

@@ -57,7 +57,13 @@ export function summarizeToolCall(
 
   if (toolName === "shellTool") {
     const command = asString(parsedArgs?.command);
-    return command ? `Running ${command}` : "Running a shell command in the project";
+    const cwd = asString(parsedArgs?.cwd);
+
+    if (command && cwd) {
+      return `Running ${command} in ${cwd}`;
+    }
+
+    return command ? `Running ${command}` : "Running a shell command in the configured root";
   }
 
   if (toolName === "browserTool") {

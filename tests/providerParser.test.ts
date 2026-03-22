@@ -92,6 +92,28 @@ test("parseDecisionResponse handles fenced JSON tool calls and shell aliases", (
   });
 });
 
+test("parseDecisionResponse preserves shell cwd arguments", () => {
+  const decision = parseDecisionResponse(JSON.stringify({
+    type: "tool_call",
+    toolName: "shellTool",
+    args: {
+      command: "git status",
+      cwd: "/Users/example/project",
+    },
+    reason: "Inspect the external project.",
+  }));
+
+  assert.deepEqual(decision, {
+    type: "tool_call",
+    toolName: "shellTool",
+    args: {
+      command: "git status",
+      cwd: "/Users/example/project",
+    },
+    reason: "Inspect the external project.",
+  });
+});
+
 test("parseDecisionResponse handles nested payloads and the code alias", () => {
   const decision = parseDecisionResponse(JSON.stringify({
     decision: {

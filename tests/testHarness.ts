@@ -197,6 +197,7 @@ export function createTestHarness(label: string) {
       tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), `${label}-`));
       fsRoot = path.join(tempRoot, "workspace");
       dbPath = path.join(tempRoot, "agent.db");
+      await fs.mkdir(fsRoot, { recursive: true });
       reinitializeDbClientForTests({
         nextDbPath: dbPath,
         nextFsRoot: fsRoot,
@@ -233,6 +234,17 @@ export function createTestHarness(label: string) {
       } catch {
         return false;
       }
+    },
+    async createHostDirectory(relativePath: string) {
+      const absolutePath = path.join(tempRoot, relativePath);
+      await fs.mkdir(absolutePath, { recursive: true });
+      return absolutePath;
+    },
+    async writeHostFile(relativePath: string, content: string) {
+      const absolutePath = path.join(tempRoot, relativePath);
+      await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+      await fs.writeFile(absolutePath, content, "utf8");
+      return absolutePath;
     },
     setEnv(key: string, value?: string) {
       rememberEnv(key);
