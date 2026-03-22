@@ -1,19 +1,25 @@
 import OpenAI from "openai";
 
 import type {
+  AgentRole,
   ChatMessage,
+  ExecutorContext,
   ProviderDecisionResult,
   ProviderContext,
   ProviderResponseResult,
+  ProviderSubAgentResult,
   ProviderSummaryResult,
   ProviderUsage,
+  SubAgentResult,
   ToolExecutionRecord,
 } from "@/lib/agent/types";
 import { AGENT_FS_ROOT } from "@/lib/db/client";
 import type { AgentProvider, SummaryContext } from "@/lib/llm/provider";
 import { parseDecisionResponse } from "@/lib/llm/decisionParser";
 import {
-  buildApiDecisionPrompt,
+  buildApiExecutorDecisionPrompt,
+  buildApiExecutorResultPrompt,
+  buildApiPlannerDecisionPrompt,
   buildApiResponsePrompt,
   buildApiSummaryPrompt,
 } from "@/lib/llm/prompts";
@@ -31,7 +37,11 @@ function getApiClient() {
   });
 }
 
-function getApiModel() {
+export function getApiModelForRole(role: AgentRole) {
+  if (role === "executor") {
+    return process.env.LLM_API_MODEL_EXECUTOR?.trim() || "qwen3.5-plus";
+  }
+
   return process.env.LLM_API_MODEL ?? process.env.OPENAI_MODEL ?? "gpt-5.4";
 }
 
@@ -79,14 +89,35 @@ function formatToolArgs(toolExecution: ToolExecutionRecord) {
 export function formatRecentToolExecutions(toolExecutions: ToolExecutionRecord[]) {
   return toolExecutions
     .map((toolExecution) => {
-      const result =
-        toolExecution.error ??
-        JSON.stringify(toolExecution.result ?? null);
+      const result = toolExecution.error ?? JSON.stringify(toolExecution.result ?? null);
       return [
         `TOOL: ${toolExecution.toolName}`,
+        `ROLE: ${toolExecution.agentRole ?? "planner"}`,
         `STATUS: ${toolExecution.status}`,
         `ARGS: ${formatToolArgs(toolExecution)}`,
         `RESULT: ${result}`,
+      ].join("\n");
+    })
+    .join("\n\n");
+}
+
+function formatRecentExecutorResults(context: ProviderContext) {
+  if (context.role !== "planner") {
+    return "(none)";
+  }
+
+  return context.recentExecutorResults
+    .map((result) => {
+      const artifacts = result.keyArtifacts.length > 0 ? result.keyArtifacts.join(", ") : "(none)";
+      const lastTool = result.lastToolResult
+        ? `${result.lastToolResult.toolName} ${result.lastToolResult.status}`
+        : "(none)";
+
+      return [
+        `RUN: ${result.runId}`,
+        `SUMMARY: ${result.summary}`,
+        `ARTIFACTS: ${artifacts}`,
+        `LAST_TOOL: ${lastTool}`,
       ].join("\n");
     })
     .join("\n\n");
@@ -111,9 +142,12 @@ function buildUsage(
   };
 }
 
-async function createTextResponse(input: string, operation: ProviderUsage["operation"]) {
+async function createTextResponse(
+  input: string,
+  operation: ProviderUsage["operation"],
+  modelName: string,
+) {
   const client = getApiClient();
-  const modelName = getApiModel();
   const response = await client.responses.create({
     model: modelName,
     input,
@@ -128,10 +162,10 @@ async function createTextResponse(input: string, operation: ProviderUsage["opera
 async function createStreamingTextResponse(
   input: string,
   operation: ProviderUsage["operation"],
+  modelName: string,
   onDelta: (delta: string) => void | Promise<void>,
 ): Promise<ProviderResponseResult> {
   const client = getApiClient();
-  const modelName = getApiModel();
   const stream = await client.responses.create({
     model: modelName,
     input,
@@ -139,7 +173,6 @@ async function createStreamingTextResponse(
   });
 
   let streamedText = "";
-  let usage = buildUsage(operation, modelName, null);
 
   for await (const event of stream) {
     if (event.type === "response.output_text.delta" && event.delta) {
@@ -157,25 +190,103 @@ async function createStreamingTextResponse(
 
   return {
     content: streamedText,
-    usage,
+    usage: buildUsage(operation, modelName, null),
+  };
+}
+
+function buildDecisionPrompt(context: ProviderContext, modelName: string) {
+  if (context.role === "planner") {
+    return buildApiPlannerDecisionPrompt({
+      modelName,
+      workspaceRoot: AGENT_FS_ROOT,
+      summary: context.summary,
+      latestUserMessage: context.latestUserMessage,
+      recentMessages: formatRecentMessages(context.recentMessages),
+      recentToolExecutions: formatRecentToolExecutions(context.recentToolExecutions),
+      recentExecutorResults: formatRecentExecutorResults(context),
+      lastToolResult: context.lastToolResult ? JSON.stringify(context.lastToolResult, null, 2) : null,
+      stepIndex: context.stepIndex,
+    });
+  }
+
+  return buildApiExecutorDecisionPrompt({
+    modelName,
+    workspaceRoot: AGENT_FS_ROOT,
+    summary: context.summary,
+    latestUserMessage: context.latestUserMessage,
+    delegatedTask: context.delegatedTask,
+    successCriteria: context.successCriteria,
+    notes: context.notes,
+    recentMessages: formatRecentMessages(context.recentMessages),
+    recentToolExecutions: formatRecentToolExecutions(context.recentToolExecutions),
+    lastToolResult: context.lastToolResult ? JSON.stringify(context.lastToolResult, null, 2) : null,
+    stepIndex: context.stepIndex,
+  });
+}
+
+function buildPlannerResponsePrompt(context: ProviderContext, modelName: string) {
+  return buildApiResponsePrompt({
+    modelName,
+    workspaceRoot: AGENT_FS_ROOT,
+    summary: context.summary,
+    latestUserMessage: context.latestUserMessage,
+    recentMessages: formatRecentMessages(context.recentMessages),
+    recentToolExecutions: formatRecentToolExecutions(context.recentToolExecutions),
+    recentExecutorResults: formatRecentExecutorResults(context),
+    lastToolResult: context.lastToolResult ? JSON.stringify(context.lastToolResult, null, 2) : null,
+  });
+}
+
+function extractJsonObject(rawText: string) {
+  const trimmed = rawText.trim();
+  if (!trimmed) {
+    throw new Error("The model returned an empty response.");
+  }
+
+  const fencedMatch = /```(?:json)?\s*([\s\S]+?)```/i.exec(trimmed);
+  if (fencedMatch) {
+    return fencedMatch[1].trim();
+  }
+
+  const objectStart = trimmed.indexOf("{");
+  const objectEnd = trimmed.lastIndexOf("}");
+  if (objectStart === -1 || objectEnd === -1 || objectEnd <= objectStart) {
+    throw new Error("The model did not return a JSON object.");
+  }
+
+  return trimmed.slice(objectStart, objectEnd + 1);
+}
+
+function parseSubAgentResult(rawText: string, lastToolResult: SubAgentResult["lastToolResult"]): SubAgentResult {
+  const parsed = JSON.parse(extractJsonObject(rawText)) as unknown;
+  if (!isRecord(parsed)) {
+    throw new Error("Executor result was not an object.");
+  }
+
+  const summary = typeof parsed.summary === "string" ? parsed.summary.trim() : "";
+  if (!summary) {
+    throw new Error("Executor result did not include a summary.");
+  }
+
+  const keyArtifacts = Array.isArray(parsed.keyArtifacts)
+    ? parsed.keyArtifacts.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+
+  return {
+    summary,
+    keyArtifacts,
+    lastToolResult,
   };
 }
 
 export const apiProvider: AgentProvider = {
   name: "api",
   async plan(context: ProviderContext): Promise<ProviderDecisionResult> {
+    const modelName = getApiModelForRole(context.role);
     const response = await createTextResponse(
-      buildApiDecisionPrompt({
-        modelName: getApiModel(),
-        workspaceRoot: AGENT_FS_ROOT,
-        summary: context.summary,
-        latestUserMessage: context.latestUserMessage,
-        recentMessages: formatRecentMessages(context.recentMessages),
-        recentToolExecutions: formatRecentToolExecutions(context.recentToolExecutions),
-        lastToolResult: context.lastToolResult ? JSON.stringify(context.lastToolResult, null, 2) : null,
-        stepIndex: context.stepIndex,
-      }),
+      buildDecisionPrompt(context, modelName),
       "decision",
+      modelName,
     );
 
     return {
@@ -184,17 +295,11 @@ export const apiProvider: AgentProvider = {
     };
   },
   async respond(context: ProviderContext): Promise<ProviderResponseResult> {
+    const modelName = getApiModelForRole(context.role);
     const response = await createTextResponse(
-      buildApiResponsePrompt({
-        modelName: getApiModel(),
-        workspaceRoot: AGENT_FS_ROOT,
-        summary: context.summary,
-        latestUserMessage: context.latestUserMessage,
-        recentMessages: formatRecentMessages(context.recentMessages),
-        recentToolExecutions: formatRecentToolExecutions(context.recentToolExecutions),
-        lastToolResult: context.lastToolResult ? JSON.stringify(context.lastToolResult, null, 2) : null,
-      }),
+      buildPlannerResponsePrompt(context, modelName),
       "response",
+      modelName,
     );
 
     return {
@@ -203,27 +308,46 @@ export const apiProvider: AgentProvider = {
     };
   },
   async streamResponse(context: ProviderContext, onDelta) {
+    const modelName = getApiModelForRole(context.role);
     return createStreamingTextResponse(
-      buildApiResponsePrompt({
-        modelName: getApiModel(),
-        workspaceRoot: AGENT_FS_ROOT,
-        summary: context.summary,
-        latestUserMessage: context.latestUserMessage,
-        recentMessages: formatRecentMessages(context.recentMessages),
-        recentToolExecutions: formatRecentToolExecutions(context.recentToolExecutions),
-        lastToolResult: context.lastToolResult ? JSON.stringify(context.lastToolResult, null, 2) : null,
-      }),
+      buildPlannerResponsePrompt(context, modelName),
       "response",
+      modelName,
       onDelta,
     );
   },
+  async summarizeSubAgent(context: ExecutorContext): Promise<ProviderSubAgentResult> {
+    const modelName = getApiModelForRole("executor");
+    const response = await createTextResponse(
+      buildApiExecutorResultPrompt({
+        modelName,
+        workspaceRoot: AGENT_FS_ROOT,
+        summary: context.summary,
+        latestUserMessage: context.latestUserMessage,
+        delegatedTask: context.delegatedTask,
+        successCriteria: context.successCriteria,
+        notes: context.notes,
+        recentToolExecutions: formatRecentToolExecutions(context.recentToolExecutions),
+        lastToolResult: context.lastToolResult ? JSON.stringify(context.lastToolResult, null, 2) : null,
+      }),
+      "summary",
+      modelName,
+    );
+
+    return {
+      result: parseSubAgentResult(response.text, context.lastToolResult ?? null),
+      usage: response.usage,
+    };
+  },
   async summarize(context: SummaryContext): Promise<ProviderSummaryResult> {
+    const modelName = getApiModelForRole("planner");
     const response = await createTextResponse(
       buildApiSummaryPrompt({
         previousSummary: context.previousSummary,
         transcript: formatRecentMessages(context.messages),
       }),
       "summary",
+      modelName,
     );
 
     return {

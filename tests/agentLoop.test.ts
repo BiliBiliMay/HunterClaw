@@ -10,6 +10,8 @@ import {
   streamApprovalDecision,
   streamRetryToolExecution,
 } from "@/lib/agent/loop";
+import { db } from "@/lib/db/client";
+import { agentRuns } from "@/lib/db/schema";
 import { fileTool } from "@/lib/tools/fileTool";
 
 import {
@@ -17,6 +19,7 @@ import {
   createDecisionResult,
   createFakeProvider,
   createResponseResult,
+  createSubAgentSummaryResult,
   createTestHarness,
   createUsage,
 } from "@/tests/testHarness";
@@ -839,4 +842,491 @@ test("streamApprovalDecision emits the denial lifecycle without executing the to
     "usage.updated",
     "turn.completed",
   ]);
+});
+
+test("simple turns stay on the planner direct path and do not create executor runs", async () => {
+  const conversationId = createConversationId("planner-direct-only");
+  const provider = createFakeProvider({
+    planDecisions: [
+      createDecisionResult({
+        type: "respond",
+        reason: "No delegation is required.",
+      }),
+    ],
+    responses: [
+      () => createResponseResult("Handled directly by the planner."),
+    ],
+  });
+
+  const response = await runAgentTurn({
+    message: "Answer this directly.",
+    conversationId,
+    provider,
+  });
+
+  const runRows = db
+    .select()
+    .from(agentRuns)
+    .all()
+    .filter((row) => row.conversationId === conversationId);
+
+  assert.equal(response.status, "completed");
+  assert.equal(runRows.length, 1);
+  assert.equal(runRows[0]?.role, "planner");
+});
+
+test("complex turns delegate to the executor and planner context only receives compact executor results", async () => {
+  const conversationId = createConversationId("planner-delegates");
+  await harness.writeWorkspaceFile("docs/delegated.txt", "Delegated note.\n");
+  const provider = createFakeProvider({
+    planDecisions: [
+      createDecisionResult({
+        type: "delegate",
+        task: "Read docs/delegated.txt and confirm its contents.",
+        successCriteria: "The note has been inspected.",
+        notes: "Return only the important result.",
+        reason: "This needs repo inspection before answering.",
+      }),
+      (context) => {
+        assert.equal(context.role, "planner");
+        assert.equal(context.recentExecutorResults.length, 1);
+        assert.match(context.recentExecutorResults[0]?.summary ?? "", /delegated\.txt/);
+        assert.equal(
+          context.recentToolExecutions.some((toolExecution) => toolExecution.agentRole === "executor"),
+          false,
+        );
+        return createDecisionResult({
+          type: "respond",
+          reason: "The executor has finished.",
+        });
+      },
+    ],
+    responses: [
+      (context) => {
+        assert.equal(context.role, "planner");
+        assert.equal(context.recentExecutorResults.length, 1);
+        assert.deepEqual(context.recentExecutorResults[0]?.keyArtifacts ?? [], ["docs/delegated.txt"]);
+        return createResponseResult("The delegated note was read.");
+      },
+    ],
+  });
+  const executorProvider = createFakeProvider({
+    planDecisions: [
+      createDecisionResult({
+        type: "tool_call",
+        toolName: "fileTool",
+        args: {
+          action: "readFile",
+          path: "docs/delegated.txt",
+        },
+        reason: "Inspect the delegated note.",
+      }),
+      createDecisionResult({
+        type: "respond",
+        reason: "Ready to hand the result back.",
+      }),
+    ],
+    subAgentSummaries: [
+      (context) => {
+        assert.equal(context.role, "executor");
+        assert.equal(context.delegatedTask, "Read docs/delegated.txt and confirm its contents.");
+        return createSubAgentSummaryResult({
+          summary: "Read docs/delegated.txt and confirmed the delegated note.",
+          keyArtifacts: ["docs/delegated.txt"],
+          lastToolResult: context.lastToolResult ?? null,
+        });
+      },
+    ],
+  });
+
+  const response = await runAgentTurn({
+    message: "Read the delegated file and report back.",
+    conversationId,
+    provider,
+    executorProvider,
+  });
+
+  const runRows = db
+    .select()
+    .from(agentRuns)
+    .all()
+    .filter((row) => row.conversationId === conversationId);
+
+  assert.equal(response.status, "completed");
+  assert.equal(response.toolExecutions.length, 1);
+  assert.equal(response.toolExecutions[0]?.agentRole, "executor");
+  assert.equal(response.messages.at(-1)?.content, "The delegated note was read.");
+  assert.deepEqual(runRows.map((row) => row.role), ["planner", "executor"]);
+});
+
+test("planner can launch multiple executor runs sequentially in one turn", async () => {
+  const conversationId = createConversationId("multiple-executors");
+  const provider = createFakeProvider({
+    planDecisions: [
+      createDecisionResult({
+        type: "delegate",
+        task: "Inspect phase one.",
+        successCriteria: "Phase one is complete.",
+        reason: "First multi-step phase.",
+      }),
+      (context) => {
+        assert.equal(context.role, "planner");
+        assert.equal(context.recentExecutorResults.length, 1);
+        return createDecisionResult({
+          type: "delegate",
+          task: "Inspect phase two.",
+          successCriteria: "Phase two is complete.",
+          reason: "Second multi-step phase.",
+        });
+      },
+      (context) => {
+        assert.equal(context.role, "planner");
+        assert.equal(context.recentExecutorResults.length, 2);
+        return createDecisionResult({
+          type: "respond",
+          reason: "Both executor phases are done.",
+        });
+      },
+    ],
+    responses: [
+      () => createResponseResult("Both delegated phases completed."),
+    ],
+  });
+  const executorProvider = createFakeProvider({
+    planDecisions: [
+      createDecisionResult({
+        type: "respond",
+        reason: "Phase one complete.",
+      }),
+      createDecisionResult({
+        type: "respond",
+        reason: "Phase two complete.",
+      }),
+    ],
+    subAgentSummaries: [
+      (context) => {
+        assert.equal(context.role, "executor");
+        return createSubAgentSummaryResult({
+          summary: `Completed ${context.delegatedTask}`,
+          keyArtifacts: [context.delegatedTask],
+          lastToolResult: context.lastToolResult ?? null,
+        });
+      },
+      (context) => {
+        assert.equal(context.role, "executor");
+        return createSubAgentSummaryResult({
+          summary: `Completed ${context.delegatedTask}`,
+          keyArtifacts: [context.delegatedTask],
+          lastToolResult: context.lastToolResult ?? null,
+        });
+      },
+    ],
+  });
+
+  const response = await runAgentTurn({
+    message: "Run both delegated phases.",
+    conversationId,
+    provider,
+    executorProvider,
+  });
+
+  const runRows = db
+    .select()
+    .from(agentRuns)
+    .all()
+    .filter((row) => row.conversationId === conversationId);
+
+  assert.equal(response.status, "completed");
+  assert.equal(runRows.filter((row) => row.role === "executor").length, 2);
+  assert.equal(response.messages.at(-1)?.content, "Both delegated phases completed.");
+});
+
+test("executor runs cannot recurse into nested delegation", async () => {
+  const conversationId = createConversationId("executor-no-recursion");
+  const provider = createFakeProvider({
+    planDecisions: [
+      createDecisionResult({
+        type: "delegate",
+        task: "Attempt a nested delegation.",
+        successCriteria: "Executor handles the task without creating a child executor.",
+        reason: "This is a delegated task.",
+      }),
+      createDecisionResult({
+        type: "respond",
+        reason: "Executor corrected itself.",
+      }),
+    ],
+    responses: [
+      () => createResponseResult("Nested delegation was refused."),
+    ],
+  });
+  const executorProvider = createFakeProvider({
+    planDecisions: [
+      createDecisionResult({
+        type: "delegate",
+        task: "This should not be allowed.",
+        successCriteria: "Should never happen.",
+        reason: "Bad nested delegation.",
+      }),
+      (context) => {
+        assert.equal(context.role, "executor");
+        assert.match(context.lastToolResult?.error ?? "", /cannot delegate/i);
+        return createDecisionResult({
+          type: "respond",
+          reason: "Return control after the invalid nested delegation.",
+        });
+      },
+    ],
+    subAgentSummaries: [
+      (context) =>
+        createSubAgentSummaryResult({
+          summary: "Executor stayed single-level and reported the invalid nested delegation.",
+          keyArtifacts: [],
+          lastToolResult: context.lastToolResult ?? null,
+        }),
+    ],
+  });
+
+  const response = await runAgentTurn({
+    message: "Try the nested executor flow.",
+    conversationId,
+    provider,
+    executorProvider,
+  });
+
+  const runRows = db
+    .select()
+    .from(agentRuns)
+    .all()
+    .filter((row) => row.conversationId === conversationId);
+
+  assert.equal(response.status, "completed");
+  assert.equal(runRows.length, 2);
+  assert.equal(runRows.filter((row) => row.role === "executor").length, 1);
+});
+
+test("approvals created inside executor runs resume the executor and then return to planner", async () => {
+  const conversationId = createConversationId("executor-approval");
+  const provider = createFakeProvider({
+    planDecisions: [
+      createDecisionResult({
+        type: "delegate",
+        task: "Create drafts/executor-approved.txt through the executor.",
+        successCriteria: "The file exists with the approved content.",
+        reason: "This requires delegated file mutation.",
+      }),
+      createDecisionResult({
+        type: "respond",
+        reason: "The delegated approval flow completed.",
+      }),
+    ],
+    responses: [
+      () => createResponseResult("The executor-created file was approved and written."),
+    ],
+  });
+  const executorProvider = createFakeProvider({
+    planDecisions: [
+      createDecisionResult({
+        type: "tool_call",
+        toolName: "fileTool",
+        args: {
+          action: "writeFile",
+          path: "drafts/executor-approved.txt",
+          content: "Executor approval path.\n",
+        },
+        reason: "Create the delegated file.",
+      }),
+      createDecisionResult({
+        type: "respond",
+        reason: "The file has been written.",
+      }),
+    ],
+    subAgentSummaries: [
+      (context) =>
+        createSubAgentSummaryResult({
+          summary: "Created drafts/executor-approved.txt after approval.",
+          keyArtifacts: ["drafts/executor-approved.txt"],
+          lastToolResult: context.lastToolResult ?? null,
+        }),
+    ],
+  });
+
+  const initialResponse = await runAgentTurn({
+    message: "Create the delegated approved file.",
+    conversationId,
+    provider,
+    executorProvider,
+  });
+
+  assert.equal(initialResponse.status, "approval_required");
+  assert.ok(initialResponse.pendingApproval);
+
+  const response = await handleApprovalDecision({
+    requestId: initialResponse.pendingApproval!.id,
+    decision: "approve",
+    provider,
+    executorProvider,
+  });
+
+  assert.equal(response.status, "completed");
+  assert.equal(await harness.readWorkspaceFile("drafts/executor-approved.txt"), "Executor approval path.\n");
+  assert.equal(response.toolExecution?.agentRole, "executor");
+  assert.equal(response.messages.at(-1)?.content, "The executor-created file was approved and written.");
+});
+
+test("retry created inside executor runs resumes the executor first and then returns to planner", async () => {
+  const conversationId = createConversationId("executor-retry");
+  await harness.writeWorkspaceFile("docs/executor-retry.txt", "Retry executor note.\n");
+  const provider = createFakeProvider({
+    planDecisions: [
+      createDecisionResult({
+        type: "delegate",
+        task: "Read docs/executor-retry.txt through the executor.",
+        successCriteria: "The delegated read succeeds.",
+        reason: "This is a delegated retry case.",
+      }),
+      createDecisionResult({
+        type: "respond",
+        reason: "The retry finished.",
+      }),
+    ],
+    responses: [
+      () => createResponseResult("The executor retry completed successfully."),
+    ],
+  });
+  const executorProvider = createFakeProvider({
+    planDecisions: [
+      createDecisionResult({
+        type: "tool_call",
+        toolName: "fileTool",
+        args: {
+          action: "readFile",
+          path: "docs/executor-retry.txt",
+        },
+        reason: "Attempt the delegated read.",
+      }),
+      createDecisionResult({
+        type: "tool_call",
+        toolName: "fileTool",
+        args: {
+          action: "readFile",
+          path: "docs/executor-retry.txt",
+        },
+        reason: "Repeat the failed delegated read.",
+      }),
+      createDecisionResult({
+        type: "respond",
+        reason: "The delegated retry worked.",
+      }),
+    ],
+    subAgentSummaries: [
+      (context) =>
+        createSubAgentSummaryResult({
+          summary: "Read docs/executor-retry.txt after a manual retry.",
+          keyArtifacts: ["docs/executor-retry.txt"],
+          lastToolResult: context.lastToolResult ?? null,
+        }),
+    ],
+  });
+  let attempts = 0;
+  const originalExecute = fileTool.execute.bind(fileTool);
+
+  await withMockedFileToolExecute(async (args) => {
+    attempts += 1;
+
+    if (attempts <= 2) {
+      throw new Error("Operation timed out while reading the file.");
+    }
+
+    return originalExecute(args);
+  }, async () => {
+    const initialResponse = await runAgentTurn({
+      message: "Read the delegated retry file.",
+      conversationId,
+      provider,
+      executorProvider,
+    });
+
+    assert.equal(initialResponse.status, "retry_required");
+    assert.equal(initialResponse.toolExecutions.length, 2);
+    assert.equal(initialResponse.toolExecutions[0]?.agentRole, "executor");
+
+    const retryResponse = await retryToolExecution({
+      toolExecutionId: initialResponse.toolExecutions[1]!.id,
+      provider,
+      executorProvider,
+    });
+
+    assert.equal(retryResponse.status, "completed");
+    assert.equal(retryResponse.toolExecution?.agentRole, "executor");
+    assert.equal(retryResponse.messages.at(-1)?.content, "The executor retry completed successfully.");
+  });
+});
+
+test("streamAgentTurn keeps SSE events valid when the planner delegates to the executor", async () => {
+  const conversationId = createConversationId("stream-delegation");
+  await harness.writeWorkspaceFile("docs/stream-delegation.txt", "Stream delegated note.\n");
+  const provider = createFakeProvider({
+    planDecisions: [
+      createDecisionResult({
+        type: "delegate",
+        task: "Read docs/stream-delegation.txt through the executor.",
+        successCriteria: "The delegated note is read.",
+        reason: "Need delegated repo inspection.",
+      }),
+      createDecisionResult({
+        type: "respond",
+        reason: "The delegated read is complete.",
+      }),
+    ],
+    streamResponses: [
+      {
+        content: "Delegated streaming complete.",
+        deltas: ["Delegated ", "streaming ", "complete."],
+        usage: createUsage("response"),
+      },
+    ],
+  });
+  const executorProvider = createFakeProvider({
+    planDecisions: [
+      createDecisionResult({
+        type: "tool_call",
+        toolName: "fileTool",
+        args: {
+          action: "readFile",
+          path: "docs/stream-delegation.txt",
+        },
+        reason: "Inspect the delegated stream file.",
+      }),
+      createDecisionResult({
+        type: "respond",
+        reason: "Return to the planner.",
+      }),
+    ],
+    subAgentSummaries: [
+      (context) =>
+        createSubAgentSummaryResult({
+          summary: "Read docs/stream-delegation.txt and returned to the planner.",
+          keyArtifacts: ["docs/stream-delegation.txt"],
+          lastToolResult: context.lastToolResult ?? null,
+        }),
+    ],
+  });
+  const events: ChatStreamEvent[] = [];
+
+  const response = await streamAgentTurn({
+    message: "Stream the delegated read.",
+    conversationId,
+    provider,
+    executorProvider,
+    onEvent(event) {
+      events.push(event);
+    },
+  });
+
+  assert.equal(response.status, "completed");
+  assert.ok(getEventTypes(events).includes("tool.started"));
+  assert.ok(getEventTypes(events).includes("tool.completed"));
+  assert.ok(getEventTypes(events).includes("assistant.delta"));
+  assert.equal(response.toolExecutions[0]?.agentRole, "executor");
 });

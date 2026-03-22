@@ -27,3 +27,7 @@ export function getDefaultProvider(): AgentProvider {
 
   return apiProvider;
 }
+
+export function getExecutorProvider(): AgentProvider {
+  return apiProvider;
+}

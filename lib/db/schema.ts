@@ -60,6 +60,7 @@ export const toolExecutions = sqliteTable(
   {
     id: text("id").primaryKey(),
     conversationId: text("conversation_id").notNull(),
+    agentRunId: text("agent_run_id"),
     sourceMessageId: text("source_message_id"),
     toolName: text("tool_name").notNull(),
     argsJson: text("args_json").notNull(),
@@ -76,6 +77,10 @@ export const toolExecutions = sqliteTable(
   (table) => ({
     conversationCreatedIdx: index("tool_executions_conversation_created_idx").on(
       table.conversationId,
+      table.createdAt,
+    ),
+    agentRunCreatedIdx: index("tool_executions_agent_run_created_idx").on(
+      table.agentRunId,
       table.createdAt,
     ),
   }),
@@ -109,6 +114,7 @@ export const approvalRequests = sqliteTable(
   {
     id: text("id").primaryKey(),
     conversationId: text("conversation_id").notNull(),
+    agentRunId: text("agent_run_id"),
     sourceMessageId: text("source_message_id"),
     toolName: text("tool_name").notNull(),
     argsJson: text("args_json").notNull(),
@@ -124,6 +130,39 @@ export const approvalRequests = sqliteTable(
       table.conversationId,
       table.createdAt,
     ),
+    agentRunCreatedIdx: index("approval_requests_agent_run_created_idx").on(
+      table.agentRunId,
+      table.createdAt,
+    ),
     statusIdx: index("approval_requests_status_idx").on(table.status),
+  }),
+);
+
+export const agentRuns = sqliteTable(
+  "agent_runs",
+  {
+    id: text("id").primaryKey(),
+    conversationId: text("conversation_id").notNull(),
+    parentRunId: text("parent_run_id"),
+    sourceMessageId: text("source_message_id"),
+    role: text("role").notNull(),
+    status: text("status").notNull(),
+    inputJson: text("input_json"),
+    resultJson: text("result_json"),
+    lastToolExecutionId: text("last_tool_execution_id"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+    finishedAt: text("finished_at"),
+  },
+  (table) => ({
+    conversationCreatedIdx: index("agent_runs_conversation_created_idx").on(
+      table.conversationId,
+      table.createdAt,
+    ),
+    parentCreatedIdx: index("agent_runs_parent_created_idx").on(table.parentRunId, table.createdAt),
+    sourceMessageCreatedIdx: index("agent_runs_source_message_created_idx").on(
+      table.sourceMessageId,
+      table.createdAt,
+    ),
   }),
 );

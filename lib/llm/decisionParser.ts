@@ -2,14 +2,23 @@ import { z } from "zod";
 
 import type { ProviderDecision } from "@/lib/agent/types";
 
+const toolNameSchema = z.enum(["fileTool", "codeTool", "shellTool", "browserTool"]);
+
 const decisionSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("respond"),
     reason: z.string().min(1),
   }),
   z.object({
+    type: z.literal("delegate"),
+    task: z.string().min(1),
+    successCriteria: z.string().min(1),
+    notes: z.string().nullable().optional(),
+    reason: z.string().min(1),
+  }),
+  z.object({
     type: z.literal("tool_call"),
-    toolName: z.enum(["fileTool", "codeTool", "shellTool", "browserTool"]),
+    toolName: toolNameSchema,
     args: z.record(z.string(), z.any()),
     reason: z.string().min(1),
   }),
@@ -28,6 +37,7 @@ const messageTypeAliases = new Set([
 
 const toolTypeAliases = new Set([
   "call_tool",
+  "delegate",
   "function",
   "function_call",
   "tool",
@@ -141,7 +151,7 @@ function normalizeToolName(
     return null;
   }
 
-  const directMatch = decisionSchema.options[1].shape.toolName.safeParse(value);
+  const directMatch = toolNameSchema.safeParse(value);
   if (directMatch.success) {
     return directMatch.data;
   }
@@ -260,6 +270,23 @@ function normalizeDecision(value: unknown, depth = 0): ProviderDecision | null {
   }
 
   const normalizedType = normalizeType(value.type);
+  if (normalizedType === "delegate") {
+    const task = extractText(value.task ?? value.brief ?? value.prompt ?? value.objective, depth + 1);
+    const successCriteria = extractText(
+      value.successCriteria ?? value.success_criteria ?? value.doneWhen ?? value.done_when,
+      depth + 1,
+    );
+    if (task && successCriteria) {
+      return {
+        type: "delegate",
+        task,
+        successCriteria,
+        notes: extractText(value.notes, depth + 1),
+        reason: extractText(value.reason) ?? "Delegation is needed to continue.",
+      };
+    }
+  }
+
   if (normalizedType && messageTypeAliases.has(normalizedType)) {
     const content = extractText(
       value.content ?? value.message ?? value.text ?? value.response ?? value.answer,
@@ -291,6 +318,25 @@ function normalizeDecision(value: unknown, depth = 0): ProviderDecision | null {
           (isRecord(value.function) ? value.function.arguments : undefined),
       ),
       reason: extractText(value.reason) ?? "Tool needed to continue.",
+    };
+  }
+
+  const task = extractText(value.task ?? value.brief ?? value.prompt ?? value.objective, depth + 1);
+  const successCriteria = extractText(
+    value.successCriteria ?? value.success_criteria ?? value.doneWhen ?? value.done_when,
+    depth + 1,
+  );
+  if (
+    task &&
+    successCriteria &&
+    (normalizedType === "delegate" || normalizedType === "sub_agent" || normalizedType === "subagent")
+  ) {
+    return {
+      type: "delegate",
+      task,
+      successCriteria,
+      notes: extractText(value.notes, depth + 1),
+      reason: extractText(value.reason) ?? "Delegation is needed to continue.",
     };
   }
 

@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 
+import { getApiModelForRole } from "@/lib/llm/apiProvider";
 import { parseDecisionResponse } from "@/lib/llm/decisionParser";
-import { getConfiguredProviderName, getDefaultProvider } from "@/lib/llm/resolveProvider";
+import {
+  getConfiguredProviderName,
+  getDefaultProvider,
+  getExecutorProvider,
+} from "@/lib/llm/resolveProvider";
 
 import { createTestHarness } from "@/tests/testHarness";
 
@@ -20,6 +25,7 @@ test("resolveProvider falls back to api and recognizes codex with whitespace and
   harness.setEnv("LLM_PROVIDER");
   assert.equal(getConfiguredProviderName(), "api");
   assert.equal(getDefaultProvider().name, "api");
+  assert.equal(getExecutorProvider().name, "api");
 
   harness.setEnv("LLM_PROVIDER", "");
   assert.equal(getConfiguredProviderName(), "api");
@@ -30,6 +36,24 @@ test("resolveProvider falls back to api and recognizes codex with whitespace and
   harness.setEnv("LLM_PROVIDER", "  CoDeX  ");
   assert.equal(getConfiguredProviderName(), "codex");
   assert.equal(getDefaultProvider().name, "codex");
+  assert.equal(getExecutorProvider().name, "api");
+});
+
+test("executor model resolution defaults to qwen3.5-plus and planner keeps the global model path", () => {
+  harness.setEnv("LLM_API_MODEL");
+  harness.setEnv("OPENAI_MODEL");
+  harness.setEnv("LLM_API_MODEL_EXECUTOR");
+
+  assert.equal(getApiModelForRole("planner"), "gpt-5.4");
+  assert.equal(getApiModelForRole("executor"), "qwen3.5-plus");
+
+  harness.setEnv("LLM_API_MODEL", "planner-model");
+  harness.setEnv("OPENAI_MODEL", "fallback-model");
+  assert.equal(getApiModelForRole("planner"), "planner-model");
+  assert.equal(getApiModelForRole("executor"), "qwen3.5-plus");
+
+  harness.setEnv("LLM_API_MODEL_EXECUTOR", "custom-executor-model");
+  assert.equal(getApiModelForRole("executor"), "custom-executor-model");
 });
 
 test("parseDecisionResponse supports direct JSON respond payloads", () => {
@@ -118,6 +142,24 @@ test("parseDecisionResponse handles nested function calls and the browser alias"
       url: "https://example.com",
     },
     reason: "Open the page before answering.",
+  });
+});
+
+test("parseDecisionResponse supports planner delegate payloads", () => {
+  const decision = parseDecisionResponse(JSON.stringify({
+    type: "delegate",
+    task: "Inspect the repo, implement the fix, and verify it.",
+    successCriteria: "The bug is fixed and tests pass.",
+    notes: "Keep changes scoped to the current issue.",
+    reason: "This needs multiple dependent tool steps.",
+  }));
+
+  assert.deepEqual(decision, {
+    type: "delegate",
+    task: "Inspect the repo, implement the fix, and verify it.",
+    successCriteria: "The bug is fixed and tests pass.",
+    notes: "Keep changes scoped to the current issue.",
+    reason: "This needs multiple dependent tool steps.",
   });
 });
 

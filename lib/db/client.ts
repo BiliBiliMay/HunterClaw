@@ -175,6 +175,7 @@ function ensureSchema(client: Database.Database) {
     CREATE TABLE IF NOT EXISTS tool_executions (
       id TEXT PRIMARY KEY NOT NULL,
       conversation_id TEXT NOT NULL,
+      agent_run_id TEXT,
       source_message_id TEXT,
       tool_name TEXT NOT NULL,
       args_json TEXT NOT NULL,
@@ -214,6 +215,7 @@ function ensureSchema(client: Database.Database) {
     CREATE TABLE IF NOT EXISTS approval_requests (
       id TEXT PRIMARY KEY NOT NULL,
       conversation_id TEXT NOT NULL,
+      agent_run_id TEXT,
       source_message_id TEXT,
       tool_name TEXT NOT NULL,
       args_json TEXT NOT NULL,
@@ -230,6 +232,30 @@ function ensureSchema(client: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS approval_requests_status_idx
       ON approval_requests (status);
+
+    CREATE TABLE IF NOT EXISTS agent_runs (
+      id TEXT PRIMARY KEY NOT NULL,
+      conversation_id TEXT NOT NULL,
+      parent_run_id TEXT,
+      source_message_id TEXT,
+      role TEXT NOT NULL,
+      status TEXT NOT NULL,
+      input_json TEXT,
+      result_json TEXT,
+      last_tool_execution_id TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      finished_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS agent_runs_conversation_created_idx
+      ON agent_runs (conversation_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS agent_runs_parent_created_idx
+      ON agent_runs (parent_run_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS agent_runs_source_message_created_idx
+      ON agent_runs (source_message_id, created_at);
   `);
 
   ensureConversationTable(client);
@@ -255,6 +281,13 @@ function ensureSchema(client: Database.Database) {
     `);
   }
 
+  if (hasTable(client, "tool_executions") && !hasColumn(client, "tool_executions", "agent_run_id")) {
+    client.exec(`
+      ALTER TABLE tool_executions
+      ADD COLUMN agent_run_id TEXT;
+    `);
+  }
+
   if (hasTable(client, "tool_executions") && !hasColumn(client, "tool_executions", "retryable")) {
     client.exec(`
       ALTER TABLE tool_executions
@@ -275,6 +308,21 @@ function ensureSchema(client: Database.Database) {
       ADD COLUMN presentation_json TEXT;
     `);
   }
+
+  if (hasTable(client, "approval_requests") && !hasColumn(client, "approval_requests", "agent_run_id")) {
+    client.exec(`
+      ALTER TABLE approval_requests
+      ADD COLUMN agent_run_id TEXT;
+    `);
+  }
+
+  client.exec(`
+    CREATE INDEX IF NOT EXISTS tool_executions_agent_run_created_idx
+      ON tool_executions (agent_run_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS approval_requests_agent_run_created_idx
+      ON approval_requests (agent_run_id, created_at);
+  `);
 
   backfillConversations(client);
 }

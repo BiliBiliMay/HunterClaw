@@ -2,17 +2,26 @@ import { asc, desc, eq } from "drizzle-orm";
 
 import { deriveConversationTitle, NEW_CHAT_TITLE } from "@/lib/agent/conversations";
 import type {
+  AgentRole,
+  AgentRunRecord,
+  AgentRunStatus,
   ApprovalRequestRecord,
   ApprovalSummaryRecord,
   ChatMessage,
   ChatRole,
   ConversationSummary,
   ConversationUsageSummary,
+  ExecutorContext,
+  ExecutorRunInput,
   HistoryPayload,
   JsonRecord,
   LlmUsageEvent,
   MessageKind,
+  PlannerContext,
+  PlannerRunInput,
   ProviderUsage,
+  SubAgentResult,
+  SubAgentResultRecord,
   ToolPresentationDetails,
   ToolTimelineRecord,
   ToolExecutionRecord,
@@ -27,6 +36,7 @@ import {
 import { db } from "@/lib/db/client";
 import {
   approvalRequests,
+  agentRuns,
   conversations,
   llmUsageEvents,
   messages,
@@ -40,6 +50,7 @@ import { createId, nowIso, safeJsonParse, toJsonString } from "@/lib/utils";
 const SUMMARY_TRIGGER_COUNT = 12;
 const RECENT_RAW_MESSAGES = 8;
 const RECENT_TOOL_EXECUTIONS = 6;
+const RECENT_EXECUTOR_RESULTS = 4;
 const CONVERSATION_TITLE_MAX_LENGTH = 48;
 const CONVERSATION_PREVIEW_MAX_LENGTH = 96;
 
@@ -91,6 +102,8 @@ function mapToolExecutionRow(row: typeof toolExecutions.$inferSelect): ToolExecu
   return {
     id: row.id,
     conversationId: row.conversationId,
+    agentRunId: row.agentRunId,
+    agentRole: null,
     sourceMessageId: row.sourceMessageId,
     toolName: row.toolName,
     args: safeJsonParse(row.argsJson, null),
@@ -110,6 +123,7 @@ function mapApprovalRow(row: typeof approvalRequests.$inferSelect): ApprovalRequ
   return {
     id: row.id,
     conversationId: row.conversationId,
+    agentRunId: row.agentRunId,
     sourceMessageId: row.sourceMessageId,
     toolName: row.toolName,
     args: safeJsonParse(row.argsJson, null),
@@ -134,6 +148,106 @@ function mapLlmUsageRow(row: typeof llmUsageEvents.$inferSelect): LlmUsageEvent 
     outputTokens: parseTokenValue(row.outputTokens),
     totalTokens: parseTokenValue(row.totalTokens),
     createdAt: row.createdAt,
+  };
+}
+
+function mapAgentRunRow(row: typeof agentRuns.$inferSelect): AgentRunRecord {
+  return {
+    id: row.id,
+    conversationId: row.conversationId,
+    parentRunId: row.parentRunId,
+    sourceMessageId: row.sourceMessageId,
+    role: row.role as AgentRunRecord["role"],
+    status: row.status as AgentRunRecord["status"],
+    input: safeJsonParse<unknown>(row.inputJson, null),
+    result: safeJsonParse<unknown>(row.resultJson, null),
+    lastToolExecutionId: row.lastToolExecutionId,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    finishedAt: row.finishedAt,
+  };
+}
+
+function normalizeAgentRole(value: string | null | undefined): AgentRole | null {
+  if (value === "planner" || value === "executor") {
+    return value;
+  }
+
+  return null;
+}
+
+function parseSubAgentResult(value: unknown): SubAgentResult | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+
+  const summary = typeof record.summary === "string" ? record.summary.trim() : "";
+  if (!summary) {
+    return null;
+  }
+
+  const keyArtifacts = Array.isArray(record.keyArtifacts)
+    ? record.keyArtifacts.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+  const lastToolResult =
+    record.lastToolResult && typeof record.lastToolResult === "object" && !Array.isArray(record.lastToolResult)
+      ? (record.lastToolResult as SubAgentResult["lastToolResult"])
+      : null;
+
+  return {
+    summary,
+    keyArtifacts,
+    lastToolResult,
+  };
+}
+
+async function loadAgentRoleMap(runIds: string[]) {
+  const uniqueRunIds = [...new Set(runIds.filter((runId): runId is string => Boolean(runId)))];
+  if (uniqueRunIds.length === 0) {
+    return new Map<string, AgentRole>();
+  }
+
+  const runIdSet = new Set(uniqueRunIds);
+  const rows = db
+    .select()
+    .from(agentRuns)
+    .all()
+    .filter((row) => runIdSet.has(row.id));
+
+  return new Map<string, AgentRole>(
+    rows
+      .map((row) => [row.id, normalizeAgentRole(row.role)] as const)
+      .filter((entry): entry is readonly [string, AgentRole] => entry[1] != null),
+  );
+}
+
+async function attachAgentRolesToToolExecutions(records: ToolExecutionRecord[]) {
+  const roleMap = await loadAgentRoleMap(records.map((record) => record.agentRunId ?? ""));
+
+  return records.map((record) => ({
+    ...record,
+    agentRole: record.agentRunId ? roleMap.get(record.agentRunId) ?? null : "planner",
+  }));
+}
+
+async function buildRecentConversationMessages(conversationId: string) {
+  const summaryRow = await getLatestSummary(conversationId);
+  const messageRows = db
+    .select()
+    .from(messages)
+    .where(eq(messages.conversationId, conversationId))
+    .orderBy(asc(messages.createdAt))
+    .all();
+  const mappedMessages = messageRows.map(mapMessageRow);
+  const cutoffIndex = summaryRow
+    ? mappedMessages.findIndex((message) => message.id === summaryRow.lastMessageId)
+    : -1;
+
+  return {
+    summary: summaryRow?.content ?? null,
+    recentMessages: mappedMessages.slice(cutoffIndex + 1).slice(-RECENT_RAW_MESSAGES),
   };
 }
 
@@ -346,19 +460,7 @@ export async function getLatestSummary(conversationId: string) {
 }
 
 export async function loadConversationMemory(conversationId: string) {
-  const summaryRow = await getLatestSummary(conversationId);
-  const messageRows = db
-    .select()
-    .from(messages)
-    .where(eq(messages.conversationId, conversationId))
-    .orderBy(asc(messages.createdAt))
-    .all();
-
-  const mappedMessages = messageRows.map(mapMessageRow);
-  const cutoffIndex = summaryRow
-    ? mappedMessages.findIndex((message) => message.id === summaryRow.lastMessageId)
-    : -1;
-  const recentMessages = mappedMessages.slice(cutoffIndex + 1).slice(-RECENT_RAW_MESSAGES);
+  const { summary, recentMessages } = await buildRecentConversationMessages(conversationId);
   const recentToolExecutionRows = db
     .select()
     .from(toolExecutions)
@@ -370,9 +472,251 @@ export async function loadConversationMemory(conversationId: string) {
 
   return {
     conversationId,
-    summary: summaryRow?.content ?? null,
+    summary,
     recentMessages,
-    recentToolExecutions: recentToolExecutionRows.map(mapToolExecutionRow),
+    recentToolExecutions: await attachAgentRolesToToolExecutions(
+      recentToolExecutionRows.map(mapToolExecutionRow),
+    ),
+  };
+}
+
+export async function createAgentRun({
+  conversationId,
+  parentRunId = null,
+  sourceMessageId = null,
+  role,
+  input,
+}: {
+  conversationId: string;
+  parentRunId?: string | null;
+  sourceMessageId?: string | null;
+  role: AgentRunRecord["role"];
+  input: PlannerRunInput | ExecutorRunInput;
+}) {
+  const timestamp = nowIso();
+  const run: AgentRunRecord = {
+    id: createId("run"),
+    conversationId,
+    parentRunId,
+    sourceMessageId,
+    role,
+    status: "running",
+    input,
+    result: null,
+    lastToolExecutionId: null,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    finishedAt: null,
+  };
+
+  await ensureConversationRecord(conversationId, timestamp);
+
+  db.insert(agentRuns)
+    .values({
+      id: run.id,
+      conversationId,
+      parentRunId,
+      sourceMessageId,
+      role,
+      status: run.status,
+      inputJson: toJsonString(input),
+      resultJson: null,
+      lastToolExecutionId: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      finishedAt: null,
+    })
+    .run();
+
+  return run;
+}
+
+export async function getAgentRunById(runId: string) {
+  const row = db
+    .select()
+    .from(agentRuns)
+    .where(eq(agentRuns.id, runId))
+    .limit(1)
+    .all()[0];
+
+  return row ? mapAgentRunRow(row) : null;
+}
+
+export async function updateAgentRun({
+  runId,
+  status,
+  result,
+  lastToolExecutionId,
+  finishedAt,
+}: {
+  runId: string;
+  status?: AgentRunStatus;
+  result?: unknown;
+  lastToolExecutionId?: string | null;
+  finishedAt?: string | null;
+}) {
+  const updatedAt = nowIso();
+  const nextFinishedAt = finishedAt === undefined
+    ? status === "completed" || status === "error"
+      ? updatedAt
+      : undefined
+    : finishedAt;
+
+  db.update(agentRuns)
+    .set({
+      ...(status !== undefined ? { status } : {}),
+      ...(result !== undefined ? { resultJson: result == null ? null : toJsonString(result) } : {}),
+      ...(lastToolExecutionId !== undefined ? { lastToolExecutionId } : {}),
+      ...(nextFinishedAt !== undefined ? { finishedAt: nextFinishedAt } : {}),
+      updatedAt,
+    })
+    .where(eq(agentRuns.id, runId))
+    .run();
+
+  return getAgentRunById(runId);
+}
+
+export async function listExecutorResultsForPlanner({
+  conversationId,
+  sourceMessageId,
+}: {
+  conversationId: string;
+  sourceMessageId: string | null;
+}): Promise<SubAgentResultRecord[]> {
+  const rows = db
+    .select()
+    .from(agentRuns)
+    .where(eq(agentRuns.conversationId, conversationId))
+    .orderBy(desc(agentRuns.createdAt))
+    .all()
+    .filter((row) => {
+      if (row.role !== "executor" || row.status !== "completed" || !row.resultJson) {
+        return false;
+      }
+
+      if (sourceMessageId && row.sourceMessageId !== sourceMessageId) {
+        return false;
+      }
+
+      return true;
+    })
+    .slice(0, RECENT_EXECUTOR_RESULTS)
+    .reverse();
+
+  return rows
+    .map((row) => {
+      const result = parseSubAgentResult(safeJsonParse<unknown>(row.resultJson, null));
+      if (!result) {
+        return null;
+      }
+
+      return {
+        ...result,
+        runId: row.id,
+        createdAt: row.createdAt,
+      };
+    })
+    .filter((result): result is SubAgentResultRecord => result != null);
+}
+
+export async function loadPlannerContext({
+  conversationId,
+  sourceMessageId,
+  latestUserMessage,
+  lastToolResult,
+  stepIndex,
+}: {
+  conversationId: string;
+  sourceMessageId: string | null;
+  latestUserMessage: string;
+  lastToolResult?: ToolResult;
+  stepIndex: number;
+}): Promise<PlannerContext> {
+  const { summary, recentMessages } = await buildRecentConversationMessages(conversationId);
+  const candidateToolRows = db
+    .select()
+    .from(toolExecutions)
+    .where(eq(toolExecutions.conversationId, conversationId))
+    .orderBy(desc(toolExecutions.createdAt))
+    .all();
+  const candidateToolExecutions = await attachAgentRolesToToolExecutions(
+    candidateToolRows.map(mapToolExecutionRow),
+  );
+  const recentToolExecutions = candidateToolExecutions
+    .filter((record) => {
+      if (sourceMessageId && record.sourceMessageId !== sourceMessageId) {
+        return false;
+      }
+
+      return record.agentRole !== "executor";
+    })
+    .slice(0, RECENT_TOOL_EXECUTIONS)
+    .reverse();
+
+  return {
+    role: "planner",
+    conversationId,
+    sourceMessageId,
+    summary,
+    recentMessages,
+    recentToolExecutions,
+    recentExecutorResults: await listExecutorResultsForPlanner({
+      conversationId,
+      sourceMessageId,
+    }),
+    latestUserMessage,
+    lastToolResult,
+    stepIndex,
+  };
+}
+
+export async function loadExecutorContext({
+  runId,
+  latestUserMessage,
+  lastToolResult,
+  stepIndex,
+}: {
+  runId: string;
+  latestUserMessage: string;
+  lastToolResult?: ToolResult;
+  stepIndex: number;
+}): Promise<ExecutorContext> {
+  const run = await getAgentRunById(runId);
+  if (!run) {
+    throw new Error("Agent run not found.");
+  }
+
+  const input = (run.input ?? null) as ExecutorRunInput | null;
+  if (run.role !== "executor" || !input?.task || !input.successCriteria) {
+    throw new Error("Executor run is missing its delegated task input.");
+  }
+
+  const { summary, recentMessages } = await buildRecentConversationMessages(run.conversationId);
+  const recentToolExecutions = await attachAgentRolesToToolExecutions(
+    db
+      .select()
+      .from(toolExecutions)
+      .where(eq(toolExecutions.agentRunId, runId))
+      .orderBy(desc(toolExecutions.createdAt))
+      .limit(RECENT_TOOL_EXECUTIONS)
+      .all()
+      .reverse()
+      .map(mapToolExecutionRow),
+  );
+
+  return {
+    role: "executor",
+    conversationId: run.conversationId,
+    sourceMessageId: run.sourceMessageId,
+    summary,
+    recentMessages,
+    recentToolExecutions,
+    latestUserMessage,
+    delegatedTask: input.task,
+    successCriteria: input.successCriteria,
+    notes: input.notes ?? null,
+    lastToolResult,
+    stepIndex,
   };
 }
 
@@ -513,6 +857,7 @@ export async function maybeSummarizeConversation(
 
 export async function createApprovalRequest({
   conversationId,
+  agentRunId = null,
   sourceMessageId,
   toolName,
   args,
@@ -521,6 +866,7 @@ export async function createApprovalRequest({
   reason,
 }: {
   conversationId: string;
+  agentRunId?: string | null;
   sourceMessageId: string | null;
   toolName: string;
   args: unknown;
@@ -531,6 +877,7 @@ export async function createApprovalRequest({
   const approvalRequest: ApprovalRequestRecord = {
     id: createId("approval"),
     conversationId,
+    agentRunId,
     sourceMessageId,
     toolName,
     args,
@@ -548,6 +895,7 @@ export async function createApprovalRequest({
     .values({
       id: approvalRequest.id,
       conversationId,
+      agentRunId,
       sourceMessageId,
       toolName,
       argsJson: toJsonString(args),
@@ -600,6 +948,7 @@ export async function resolveApprovalRequest(
 
 export async function logToolExecutionStart({
   conversationId,
+  agentRunId = null,
   sourceMessageId,
   toolName,
   args,
@@ -608,6 +957,7 @@ export async function logToolExecutionStart({
   retryOfExecutionId = null,
 }: {
   conversationId: string;
+  agentRunId?: string | null;
   sourceMessageId: string | null;
   toolName: string;
   args: unknown;
@@ -615,9 +965,14 @@ export async function logToolExecutionStart({
   riskLevel: ToolExecutionRecord["riskLevel"];
   retryOfExecutionId?: string | null;
 }) {
+  const agentRole = agentRunId
+    ? (await getAgentRunById(agentRunId))?.role ?? null
+    : "planner";
   const execution: ToolExecutionRecord = {
     id: createId("tool"),
     conversationId,
+    agentRunId,
+    agentRole,
     sourceMessageId,
     toolName,
     args,
@@ -638,6 +993,7 @@ export async function logToolExecutionStart({
     .values({
       id: execution.id,
       conversationId,
+      agentRunId,
       sourceMessageId,
       toolName,
       argsJson: toJsonString(args),
@@ -652,6 +1008,13 @@ export async function logToolExecutionStart({
       finishedAt: null,
     })
     .run();
+
+  if (agentRunId) {
+    await updateAgentRun({
+      runId: agentRunId,
+      lastToolExecutionId: execution.id,
+    });
+  }
 
   return execution;
 }
@@ -686,7 +1049,12 @@ export async function finishToolExecution(
     .limit(1)
     .all()[0];
 
-  return row ? mapToolExecutionRow(row) : null;
+  if (!row) {
+    return null;
+  }
+
+  const [mappedRow] = await attachAgentRolesToToolExecutions([mapToolExecutionRow(row)]);
+  return mappedRow ?? null;
 }
 
 export async function getToolExecutionById(executionId: string) {
@@ -697,7 +1065,12 @@ export async function getToolExecutionById(executionId: string) {
     .limit(1)
     .all()[0];
 
-  return row ? mapToolExecutionRow(row) : null;
+  if (!row) {
+    return null;
+  }
+
+  const [mappedRow] = await attachAgentRolesToToolExecutions([mapToolExecutionRow(row)]);
+  return mappedRow ?? null;
 }
 
 async function buildConversationUsageSummary(
@@ -758,7 +1131,9 @@ export async function getHistoryPayload(conversationId: string): Promise<History
     .all()
     .filter((row) => row.status === "pending");
   const mappedMessages = messageRows.map(mapMessageRow);
-  const rawToolExecutions = toolRows.map(mapToolExecutionRow);
+  const rawToolExecutions = await attachAgentRolesToToolExecutions(
+    toolRows.map(mapToolExecutionRow),
+  );
   const rawApprovals = approvalRows.map(mapApprovalRow);
   const usage = await buildConversationUsageSummary(conversationId, mappedMessages);
 

@@ -58,6 +58,7 @@ sqlite.exec(`
   CREATE TABLE IF NOT EXISTS tool_executions (
     id TEXT PRIMARY KEY NOT NULL,
     conversation_id TEXT NOT NULL,
+    agent_run_id TEXT,
     source_message_id TEXT,
     tool_name TEXT NOT NULL,
     args_json TEXT NOT NULL,
@@ -97,6 +98,7 @@ sqlite.exec(`
   CREATE TABLE IF NOT EXISTS approval_requests (
     id TEXT PRIMARY KEY NOT NULL,
     conversation_id TEXT NOT NULL,
+    agent_run_id TEXT,
     source_message_id TEXT,
     tool_name TEXT NOT NULL,
     args_json TEXT NOT NULL,
@@ -113,6 +115,30 @@ sqlite.exec(`
 
   CREATE INDEX IF NOT EXISTS approval_requests_status_idx
     ON approval_requests (status);
+
+  CREATE TABLE IF NOT EXISTS agent_runs (
+    id TEXT PRIMARY KEY NOT NULL,
+    conversation_id TEXT NOT NULL,
+    parent_run_id TEXT,
+    source_message_id TEXT,
+    role TEXT NOT NULL,
+    status TEXT NOT NULL,
+    input_json TEXT,
+    result_json TEXT,
+    last_tool_execution_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    finished_at TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS agent_runs_conversation_created_idx
+    ON agent_runs (conversation_id, created_at);
+
+  CREATE INDEX IF NOT EXISTS agent_runs_parent_created_idx
+    ON agent_runs (parent_run_id, created_at);
+
+  CREATE INDEX IF NOT EXISTS agent_runs_source_message_created_idx
+    ON agent_runs (source_message_id, created_at);
 `);
 
 const conversationRows = sqlite
@@ -200,6 +226,13 @@ if (!toolExecutionColumns.some((column) => column.name === "source_message_id"))
   `);
 }
 
+if (!toolExecutionColumns.some((column) => column.name === "agent_run_id")) {
+  sqlite.exec(`
+    ALTER TABLE tool_executions
+    ADD COLUMN agent_run_id TEXT;
+  `);
+}
+
 if (!toolExecutionColumns.some((column) => column.name === "retryable")) {
   sqlite.exec(`
     ALTER TABLE tool_executions
@@ -220,6 +253,21 @@ if (!approvalColumns.some((column) => column.name === "presentation_json")) {
     ADD COLUMN presentation_json TEXT;
   `);
 }
+
+if (!approvalColumns.some((column) => column.name === "agent_run_id")) {
+  sqlite.exec(`
+    ALTER TABLE approval_requests
+    ADD COLUMN agent_run_id TEXT;
+  `);
+}
+
+sqlite.exec(`
+  CREATE INDEX IF NOT EXISTS tool_executions_agent_run_created_idx
+    ON tool_executions (agent_run_id, created_at);
+
+  CREATE INDEX IF NOT EXISTS approval_requests_agent_run_created_idx
+    ON approval_requests (agent_run_id, created_at);
+`);
 
 if (!fs.existsSync(welcomeFilePath)) {
   fs.writeFileSync(

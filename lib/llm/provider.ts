@@ -1,5 +1,7 @@
 import type {
   ChatMessage,
+  ExecutorContext,
+  ProviderSubAgentResult,
   ProviderContext,
   ProviderDecisionResult,
   ProviderResponseResult,
@@ -20,5 +22,6 @@ export interface AgentProvider {
     context: ProviderContext,
     onDelta: (delta: string) => void | Promise<void>,
   ): Promise<ProviderResponseResult>;
+  summarizeSubAgent?(context: ExecutorContext): Promise<ProviderSubAgentResult>;
   summarize?(context: SummaryContext): Promise<ProviderSummaryResult>;
 }

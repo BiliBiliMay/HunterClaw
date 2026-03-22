@@ -4,12 +4,14 @@ import path from "node:path";
 
 import { nowIso } from "@/lib/utils";
 import type {
+  ProviderSubAgentResult,
   ProviderDecision,
   ProviderDecisionResult,
   ProviderResponseResult,
   ProviderUsage,
   ProviderSummaryResult,
   ProviderContext,
+  SubAgentResult,
 } from "@/lib/agent/types";
 import type { AgentProvider, SummaryContext } from "@/lib/llm/provider";
 import { db, reinitializeDbClientForTests } from "@/lib/db/client";
@@ -87,6 +89,16 @@ export function createSummaryResult(
   };
 }
 
+export function createSubAgentSummaryResult(
+  result: SubAgentResult,
+  usageOverrides: Partial<ProviderUsage> = {},
+): ProviderSubAgentResult {
+  return {
+    result,
+    usage: createUsage("summary", usageOverrides),
+  };
+}
+
 export function createConversationId(label: string) {
   return `test-${label}-${crypto.randomUUID()}`;
 }
@@ -96,18 +108,21 @@ export function createFakeProvider({
   planDecisions = [],
   responses = [],
   streamResponses = [],
+  subAgentSummaries = [],
   summaries,
 }: {
   name?: string;
   planDecisions?: QueueEntry<ProviderContext, ProviderDecisionResult>[];
   responses?: QueueEntry<ProviderContext, ProviderResponseResult | string>[];
   streamResponses?: QueueEntry<ProviderContext, FakeStreamResponseScript>[];
+  subAgentSummaries?: QueueEntry<ProviderContext, ProviderSubAgentResult | SubAgentResult>[];
   summaries?: QueueEntry<SummaryContext, ProviderSummaryResult | string>[];
 } = {}) {
   const calls = {
     plan: [] as ProviderContext[],
     respond: [] as ProviderContext[],
     streamResponse: [] as ProviderContext[],
+    summarizeSubAgent: [] as ProviderContext[],
     summarize: [] as SummaryContext[],
   };
 
@@ -137,6 +152,11 @@ export function createFakeProvider({
       }
 
       return response;
+    },
+    async summarizeSubAgent(context) {
+      calls.summarizeSubAgent.push(context);
+      const next = await takeQueueEntry(subAgentSummaries, "sub-agent summary", context);
+      return "result" in next ? next : createSubAgentSummaryResult(next);
     },
   };
 

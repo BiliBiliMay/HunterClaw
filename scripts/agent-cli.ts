@@ -157,7 +157,9 @@ function renderMessage(message: ChatMessage) {
 }
 
 function renderToolExecution(toolExecution: ToolTimelineRecord) {
-  printLine(`Tool ${toolExecution.toolName} [${toolExecution.status}/${toolExecution.riskLevel}]`);
+  printLine(
+    `Tool ${toolExecution.toolName} [${toolExecution.status}/${toolExecution.riskLevel}/${toolExecution.agentRole ?? "planner"}]`,
+  );
   printLine(`Summary: ${toolExecution.summary}`);
   if (toolExecution.error) {
     printLine(`Error: ${toolExecution.error}`);

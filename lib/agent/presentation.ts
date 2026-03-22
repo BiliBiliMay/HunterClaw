@@ -95,6 +95,7 @@ export function toToolTimelineRecord(record: ToolExecutionRecord): ToolTimelineR
   return {
     id: record.id,
     toolName: record.toolName,
+    agentRole: record.agentRole,
     riskLevel: record.riskLevel,
     status: record.status,
     summary: summarizeToolCall(record.toolName, record.args, record.presentation),

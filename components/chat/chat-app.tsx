@@ -164,19 +164,21 @@ function mergeConversations(
 }
 
 function formatToolHeadline(toolExecution: ToolTimelineRecord) {
+  const actor = toolExecution.agentRole === "executor" ? "Executor" : "Planner";
+
   if (toolExecution.status === "running") {
-    return `Using ${toolExecution.toolName}`;
+    return `${actor} using ${toolExecution.toolName}`;
   }
 
   if (toolExecution.status === "blocked") {
-    return `Blocked ${toolExecution.toolName}`;
+    return `${actor} blocked on ${toolExecution.toolName}`;
   }
 
   if (toolExecution.status === "error") {
-    return `Error in ${toolExecution.toolName}`;
+    return `${actor} error in ${toolExecution.toolName}`;
   }
 
-  return `Used ${toolExecution.toolName}`;
+  return `${actor} used ${toolExecution.toolName}`;
 }
 
 function formatRiskLabel(riskLevel: ToolTimelineRecord["riskLevel"]) {
@@ -412,6 +414,9 @@ function ToolActivity({
           <span className="font-medium">{formatToolHeadline(toolExecution)}</span>
           <span className="rounded-full border border-[var(--hc-border)] px-2 py-1 text-[11px] uppercase tracking-[0.14em] text-[var(--hc-muted)]">
             {toolExecution.status}
+          </span>
+          <span className="rounded-full border border-[var(--hc-border)] px-2 py-1 text-[11px] uppercase tracking-[0.14em] text-[var(--hc-muted)]">
+            {toolExecution.agentRole === "executor" ? "executor" : "planner"}
           </span>
           <span className="rounded-full border border-[var(--hc-border)] px-2 py-1 text-[11px] uppercase tracking-[0.14em] text-[var(--hc-muted)]">
             {formatRiskLabel(toolExecution.riskLevel)}

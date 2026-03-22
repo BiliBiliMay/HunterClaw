@@ -8,6 +8,13 @@ export type ApprovalStatus = "pending" | "approved" | "denied";
 export type LlmUsageOperation = "decision" | "response" | "summary";
 export type ChatPhase = "planning" | "running_tool" | "waiting_approval" | "responding";
 export type CodeToolAction = "createFile" | "applyPatch";
+export type AgentRole = "planner" | "executor";
+export type AgentRunStatus =
+  | "running"
+  | "waiting_approval"
+  | "retry_required"
+  | "completed"
+  | "error";
 
 export type JsonValue =
   | string
@@ -63,9 +70,46 @@ export type ToolResult = {
   retryable: boolean;
 };
 
+export type SubAgentResult = {
+  summary: string;
+  keyArtifacts: string[];
+  lastToolResult: ToolResult | null;
+};
+
+export type ExecutorRunInput = {
+  task: string;
+  successCriteria: string;
+  notes: string | null;
+};
+
+export type PlannerRunInput = {
+  latestUserMessage: string;
+};
+
+export type AgentRunRecord = {
+  id: string;
+  conversationId: string;
+  parentRunId: string | null;
+  sourceMessageId: string | null;
+  role: AgentRole;
+  status: AgentRunStatus;
+  input: unknown;
+  result: unknown;
+  lastToolExecutionId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
+};
+
+export type SubAgentResultRecord = SubAgentResult & {
+  runId: string;
+  createdAt: string;
+};
+
 export type ApprovalRequestRecord = {
   id: string;
   conversationId: string;
+  agentRunId: string | null;
   sourceMessageId: string | null;
   toolName: string;
   args: unknown;
@@ -80,6 +124,8 @@ export type ApprovalRequestRecord = {
 export type ToolExecutionRecord = {
   id: string;
   conversationId: string;
+  agentRunId: string | null;
+  agentRole: AgentRole | null;
   sourceMessageId: string | null;
   toolName: string;
   args: unknown;
@@ -97,6 +143,7 @@ export type ToolExecutionRecord = {
 export type ToolTimelineRecord = {
   id: string;
   toolName: string;
+  agentRole: AgentRole | null;
   riskLevel: RiskLevel;
   status: ToolExecutionStatus;
   summary: string;
@@ -168,6 +215,13 @@ export type ProviderDecision =
       type: "respond";
       reason: string;
     }
+  | {
+      type: "delegate";
+      task: string;
+      successCriteria: string;
+      notes?: string | null;
+      reason: string;
+    }
   | ({
       type: "tool_call";
     } & ToolCall);
@@ -187,15 +241,40 @@ export type ProviderSummaryResult = {
   usage: ProviderUsage;
 };
 
-export type ProviderContext = {
+export type ProviderSubAgentResult = {
+  result: SubAgentResult;
+  usage: ProviderUsage;
+};
+
+export type PlannerContext = {
+  role: "planner";
   conversationId: string;
+  sourceMessageId: string | null;
   summary: string | null;
   recentMessages: ChatMessage[];
   recentToolExecutions: ToolExecutionRecord[];
+  recentExecutorResults: SubAgentResultRecord[];
   latestUserMessage: string;
   lastToolResult?: ToolResult;
   stepIndex: number;
 };
+
+export type ExecutorContext = {
+  role: "executor";
+  conversationId: string;
+  sourceMessageId: string | null;
+  summary: string | null;
+  recentMessages: ChatMessage[];
+  recentToolExecutions: ToolExecutionRecord[];
+  latestUserMessage: string;
+  delegatedTask: string;
+  successCriteria: string;
+  notes: string | null;
+  lastToolResult?: ToolResult;
+  stepIndex: number;
+};
+
+export type ProviderContext = PlannerContext | ExecutorContext;
 
 export type AgentContext = {
   conversationId: string;
