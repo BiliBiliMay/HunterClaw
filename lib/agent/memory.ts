@@ -33,6 +33,12 @@ import {
   toApprovalSummaryRecord,
   toToolTimelineRecord,
 } from "@/lib/agent/presentation";
+import {
+  createDefaultApprovalPreferences,
+  isApprovalPreferenceKey,
+  type ApprovalPreferenceKey,
+  type ApprovalPreferences,
+} from "@/lib/agent/approvalPreferences";
 import { db } from "@/lib/db/client";
 import {
   approvalRequests,
@@ -1260,4 +1266,61 @@ export async function getPreference(key: string) {
     .all()[0];
 
   return row?.value ?? null;
+}
+
+export async function setPreference(key: string, value: string) {
+  db.insert(preferences)
+    .values({
+      key,
+      value,
+      updatedAt: nowIso(),
+    })
+    .onConflictDoUpdate({
+      target: preferences.key,
+      set: {
+        value,
+        updatedAt: nowIso(),
+      },
+    })
+    .run();
+}
+
+export async function getApprovalPreference(key: ApprovalPreferenceKey) {
+  const value = await getPreference(key);
+
+  if (value === null) {
+    return null;
+  }
+
+  return value === "true";
+}
+
+export async function getApprovalPreferences(): Promise<ApprovalPreferences> {
+  const rows = db
+    .select()
+    .from(preferences)
+    .all();
+  const snapshot = createDefaultApprovalPreferences();
+
+  for (const row of rows) {
+    if (!isApprovalPreferenceKey(row.key)) {
+      continue;
+    }
+
+    snapshot[row.key] = row.value === "true";
+  }
+
+  return snapshot;
+}
+
+export async function updateApprovalPreferences(
+  updates: Partial<ApprovalPreferences>,
+): Promise<ApprovalPreferences> {
+  const entries = Object.entries(updates) as [ApprovalPreferenceKey, boolean][];
+
+  for (const [key, value] of entries) {
+    await setPreference(key, value ? "true" : "false");
+  }
+
+  return getApprovalPreferences();
 }

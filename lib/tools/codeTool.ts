@@ -73,6 +73,15 @@ export type PreparedCodeOperation = {
   presentation: ToolPresentationDetails;
 };
 
+export function resolveCodeToolPath(args: CodeToolArgs) {
+  if (args.action === "createFile") {
+    return resolveFilePath(args.path);
+  }
+
+  const { targetPath } = validatePatchText(args.patch);
+  return resolveFilePath(targetPath);
+}
+
 function trimPatchPath(value: string | undefined) {
   if (!value) {
     return null;
@@ -242,12 +251,7 @@ async function readExistingTextFile(resolvedPath: string) {
 }
 
 export function getCodeToolRiskLevel(args: CodeToolArgs): RiskLevel {
-  if (args.action === "createFile") {
-    return resolveFilePath(args.path).scope === "project" ? "medium" : "high";
-  }
-
-  const { targetPath } = validatePatchText(args.patch);
-  return resolveFilePath(targetPath).scope === "project" ? "medium" : "high";
+  return resolveCodeToolPath(args).scope === "project" ? "medium" : "high";
 }
 
 export async function prepareCodeToolOperation(args: CodeToolArgs): Promise<PreparedCodeOperation> {

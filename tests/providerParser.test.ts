@@ -4,9 +4,12 @@ import test, { after, before } from "node:test";
 import { getApiModelForRole } from "@/lib/llm/apiProvider";
 import { parseDecisionResponse } from "@/lib/llm/decisionParser";
 import {
+  getConfiguredRuntimeLabels,
   getConfiguredProviderName,
   getDefaultProvider,
+  getExecutorModelLabel,
   getExecutorProvider,
+  getPlannerModelLabel,
 } from "@/lib/llm/resolveProvider";
 
 import { createTestHarness } from "@/tests/testHarness";
@@ -54,6 +57,27 @@ test("executor model resolution defaults to qwen3.5-plus and planner keeps the g
 
   harness.setEnv("LLM_API_MODEL_EXECUTOR", "custom-executor-model");
   assert.equal(getApiModelForRole("executor"), "custom-executor-model");
+});
+
+test("runtime labels reflect the configured planner and executor runtimes", () => {
+  harness.setEnv("LLM_PROVIDER");
+  harness.setEnv("LLM_API_MODEL");
+  harness.setEnv("OPENAI_MODEL");
+  harness.setEnv("LLM_API_MODEL_EXECUTOR");
+
+  assert.deepEqual(getConfiguredRuntimeLabels(), {
+    plannerModelLabel: "gpt-5.4",
+    executorModelLabel: "qwen3.5-plus",
+  });
+
+  harness.setEnv("LLM_API_MODEL", "planner-model");
+  harness.setEnv("LLM_API_MODEL_EXECUTOR", "executor-model");
+  assert.equal(getPlannerModelLabel(), "planner-model");
+  assert.equal(getExecutorModelLabel(), "executor-model");
+
+  harness.setEnv("LLM_PROVIDER", "codex");
+  assert.equal(getPlannerModelLabel(), "Codex (model unavailable)");
+  assert.equal(getExecutorModelLabel(), "executor-model");
 });
 
 test("parseDecisionResponse supports direct JSON respond payloads", () => {

@@ -1,3 +1,4 @@
+import { getApiModelForRole } from "@/lib/llm/apiProvider";
 import type { AgentProvider } from "@/lib/llm/provider";
 import { apiProvider } from "@/lib/llm/apiProvider";
 import { codexProvider } from "@/lib/llm/codexProvider";
@@ -30,4 +31,31 @@ export function getDefaultProvider(): AgentProvider {
 
 export function getExecutorProvider(): AgentProvider {
   return apiProvider;
+}
+
+function getProviderRuntimeLabel(provider: AgentProvider, role: "planner" | "executor") {
+  if (provider.name === "api") {
+    return getApiModelForRole(role);
+  }
+
+  if (provider.name === "codex") {
+    return "Codex (model unavailable)";
+  }
+
+  return provider.name;
+}
+
+export function getPlannerModelLabel() {
+  return getProviderRuntimeLabel(getDefaultProvider(), "planner");
+}
+
+export function getExecutorModelLabel() {
+  return getProviderRuntimeLabel(getExecutorProvider(), "executor");
+}
+
+export function getConfiguredRuntimeLabels() {
+  return {
+    plannerModelLabel: getPlannerModelLabel(),
+    executorModelLabel: getExecutorModelLabel(),
+  };
 }

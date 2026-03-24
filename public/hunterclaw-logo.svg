@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="40" y1="32" x2="472" y2="480" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1D2440" />
+      <stop offset="1" stop-color="#0C1124" />
+    </linearGradient>
+    <linearGradient id="teal" x1="128" y1="88" x2="386" y2="372" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1EF0F3" />
+      <stop offset="1" stop-color="#058B96" />
+    </linearGradient>
+    <linearGradient id="mint" x1="242" y1="200" x2="340" y2="364" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6EFFE5" />
+      <stop offset="1" stop-color="#2EF3A3" />
+    </linearGradient>
+    <filter id="shadow" x="66" y="74" width="331" height="340" color-interpolation-filters="sRGB">
+      <feOffset dy="10" />
+      <feGaussianBlur stdDeviation="10" />
+      <feColorMatrix values="0 0 0 0 0.020 0 0 0 0 0.080 0 0 0 0 0.140 0 0 0 0.35 0" />
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" rx="36" fill="url(#bg)" />
+
+  <g filter="url(#shadow)">
+    <path
+      d="M269 102c53 3 104 29 131 78 27 49 27 118-2 175-15 28-33 46-54 64l-23-54c26-22 43-48 51-81 13-54 2-107-32-147-23-27-56-47-94-56l23-32Z"
+      fill="url(#teal)"
+    />
+    <path
+      d="M158 144 191 96l78 10-16 28-23-3 8 25-15 18-14-39-18-3-15 23 31 43-15 17-47-71Z"
+      fill="url(#teal)"
+    />
+    <path
+      d="M154 175c-18 44-16 101 9 146 19 35 49 58 87 72l-26 37c-49-13-91-47-116-92-31-57-31-131-1-191l47 28Z"
+      fill="url(#teal)"
+    />
+    <path
+      d="m262 204 106 93-50 8 28 45-24 14-28-46-20 54-12-168Z"
+      fill="none"
+      stroke="url(#mint)"
+      stroke-linejoin="round"
+      stroke-width="16"
+    />
+  </g>
+</svg>

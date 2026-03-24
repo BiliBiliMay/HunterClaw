@@ -90,12 +90,15 @@
 }
 
 html {
+  height: 100%;
   background: var(--hc-page);
 }
 
 body {
   margin: 0;
+  height: 100%;
   min-height: 100vh;
+  overflow: hidden;
   font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
   background:
     radial-gradient(circle at top, var(--hc-page-glow), transparent 42%),

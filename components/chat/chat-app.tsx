@@ -8,12 +8,21 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { AssistantMarkdown } from "@/components/chat/assistant-markdown";
 import { CodeChangePreview } from "@/components/chat/code-change-preview";
 import type { ThemeMode } from "@/components/chat/syntax-theme";
+import {
+  approvalPreferenceDefinitions,
+  createDefaultApprovalPreferences,
+  type ApprovalPreferenceDefinition,
+  type ApprovalPreferenceGroup,
+  type ApprovalPreferenceKey,
+  type ApprovalPreferences,
+} from "@/lib/agent/approvalPreferences";
 import { DEFAULT_CONVERSATION_ID } from "@/lib/agent/types";
 import type {
   ApprovalSummaryRecord,
@@ -44,9 +53,18 @@ type CreateConversationPayload = {
   conversation: ConversationSummary;
 };
 
+type PreferencesPayload = {
+  preferences: ApprovalPreferences;
+};
+
 const NEW_CONVERSATION_TITLE = "New chat";
 const THEME_STORAGE_KEY = "hc-theme";
 const SCROLL_PIN_THRESHOLD = 96;
+const approvalPreferenceGroupOrder: ApprovalPreferenceGroup[] = ["Files", "Code edits", "Shell", "Browser"];
+const approvalPreferenceGroups = approvalPreferenceGroupOrder.map((group) => ({
+  group,
+  definitions: approvalPreferenceDefinitions.filter((definition) => definition.group === group),
+}));
 
 const emptyUsageTotals: UsageTotals = {
   inputTokens: 0,
@@ -238,28 +256,165 @@ function isScrolledNearBottom(viewport: HTMLDivElement) {
   return distance <= SCROLL_PIN_THRESHOLD;
 }
 
-function ConversationRail({
-  activeConversationId,
-  conversations,
-  isInitializing,
-  onCreateConversation,
-  onSelectConversation,
-  providerName,
+function SidebarCard({
+  children,
+  title,
 }: {
-  activeConversationId: string | null;
-  conversations: ConversationSummary[];
-  isInitializing: boolean;
-  onCreateConversation: () => Promise<void>;
-  onSelectConversation: (conversationId: string) => void;
-  providerName: string;
+  children: ReactNode;
+  title: string;
 }) {
   return (
-    <aside className="flex w-full flex-col border-b border-[var(--hc-sidebar-border)] bg-[var(--hc-sidebar)] text-[var(--hc-sidebar-text)] md:h-screen md:w-80 md:flex-none md:border-b-0 md:border-r">
-      <div className="border-b border-[var(--hc-sidebar-border)] px-4 py-4">
+    <section className="rounded-[1.5rem] border border-[var(--hc-sidebar-border)] bg-white/5 p-4 backdrop-blur-sm">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[var(--hc-sidebar-muted)]">{title}</p>
+      <div className="mt-3">{children}</div>
+    </section>
+  );
+}
+
+function RuntimeSummaryCard({
+  executorModelLabel,
+  plannerModelLabel,
+}: {
+  executorModelLabel: string;
+  plannerModelLabel: string;
+}) {
+  return (
+    <SidebarCard title="Agent runtime">
+      <div className="space-y-3">
+        <div className="rounded-2xl border border-[var(--hc-sidebar-border)] bg-black/10 px-3 py-3">
+          <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--hc-sidebar-muted)]">Planner</p>
+          <p className="mt-1 text-sm font-medium text-[var(--hc-sidebar-text)]">{plannerModelLabel}</p>
+        </div>
+        <div className="rounded-2xl border border-[var(--hc-sidebar-border)] bg-black/10 px-3 py-3">
+          <p className="text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--hc-sidebar-muted)]">Executor</p>
+          <p className="mt-1 text-sm font-medium text-[var(--hc-sidebar-text)]">{executorModelLabel}</p>
+        </div>
+      </div>
+    </SidebarCard>
+  );
+}
+
+function PermissionToggle({
+  definition,
+  isBusy,
+  isChecked,
+  isDisabled,
+  onToggle,
+}: {
+  definition: ApprovalPreferenceDefinition;
+  isBusy: boolean;
+  isChecked: boolean;
+  isDisabled: boolean;
+  onToggle: (key: ApprovalPreferenceKey) => void;
+}) {
+  return (
+    <button
+      aria-checked={isChecked}
+      className="flex w-full items-center justify-between gap-3 rounded-2xl px-3 py-2.5 text-left transition hover:bg-[var(--hc-sidebar-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+      disabled={isDisabled}
+      onClick={() => onToggle(definition.key)}
+      role="switch"
+      type="button"
+    >
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-sm font-medium text-[var(--hc-sidebar-text)]">{definition.title}</p>
+          <span className="rounded-full border border-[var(--hc-sidebar-border)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--hc-sidebar-muted)]">
+            {definition.riskLabel}
+          </span>
+        </div>
+        <p className="mt-1 text-xs leading-5 text-[var(--hc-sidebar-muted)]">{definition.description}</p>
+      </div>
+      <span
+        className={`relative inline-flex h-6 w-11 flex-none rounded-full border transition ${
+          isChecked
+            ? "border-emerald-300/30 bg-emerald-400/80"
+            : "border-[var(--hc-sidebar-border)] bg-black/20"
+        }`}
+      >
+        <span
+          className={`absolute top-0.5 h-[1.125rem] w-[1.125rem] rounded-full bg-white shadow-sm transition ${
+            isChecked ? "left-[1.35rem]" : "left-0.5"
+          } ${isBusy ? "animate-pulse" : ""}`}
+        />
+      </span>
+    </button>
+  );
+}
+
+function PermissionsCard({
+  approvalPreferences,
+  isLoadingPreferences,
+  onTogglePreference,
+  savingPreferenceKey,
+}: {
+  approvalPreferences: ApprovalPreferences;
+  isLoadingPreferences: boolean;
+  onTogglePreference: (key: ApprovalPreferenceKey) => void;
+  savingPreferenceKey: ApprovalPreferenceKey | null;
+}) {
+  return (
+    <SidebarCard title="Permissions">
+      <div className="space-y-4">
+        <p className="text-xs leading-5 text-[var(--hc-sidebar-muted)]">
+          Always-allow toggles apply to future approvals only.
+        </p>
+        <div className="max-h-56 space-y-4 overflow-y-auto overscroll-contain md:max-h-80">
+          {approvalPreferenceGroups.map((group) => (
+            <div key={group.group}>
+              <p className="px-3 text-[11px] font-medium uppercase tracking-[0.18em] text-[var(--hc-sidebar-muted)]">
+                {group.group}
+              </p>
+              <div className="mt-2 space-y-1">
+                {group.definitions.map((definition) => (
+                <PermissionToggle
+                  definition={definition}
+                  isBusy={savingPreferenceKey === definition.key}
+                  isChecked={approvalPreferences[definition.key]}
+                  isDisabled={isLoadingPreferences || savingPreferenceKey !== null}
+                  key={definition.key}
+                  onToggle={onTogglePreference}
+                />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </SidebarCard>
+  );
+}
+
+function ConversationRail({
+  activeConversationId,
+  approvalPreferences,
+  conversations,
+  executorModelLabel,
+  isInitializing,
+  isLoadingPreferences,
+  onCreateConversation,
+  onTogglePreference,
+  onSelectConversation,
+  plannerModelLabel,
+  savingPreferenceKey,
+}: {
+  activeConversationId: string | null;
+  approvalPreferences: ApprovalPreferences;
+  conversations: ConversationSummary[];
+  executorModelLabel: string;
+  isInitializing: boolean;
+  isLoadingPreferences: boolean;
+  onCreateConversation: () => Promise<void>;
+  onTogglePreference: (key: ApprovalPreferenceKey) => void;
+  onSelectConversation: (conversationId: string) => void;
+  plannerModelLabel: string;
+  savingPreferenceKey: ApprovalPreferenceKey | null;
+}) {
+  return (
+    <aside className="flex max-h-[45vh] w-full flex-col border-b border-[var(--hc-sidebar-border)] bg-[var(--hc-sidebar)] text-[var(--hc-sidebar-text)] md:h-full md:max-h-none md:w-[22rem] md:flex-none md:border-b-0 md:border-r md:overflow-hidden">
+      <div className="flex-none border-b border-[var(--hc-sidebar-border)] px-4 py-4">
         <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[var(--hc-sidebar-muted)]">HunterClaw</p>
         <p className="mt-2 text-sm text-[var(--hc-sidebar-muted)]">Local-first coding agent</p>
-        <p className="mt-4 text-[11px] font-medium uppercase tracking-[0.2em] text-[var(--hc-sidebar-muted)]">Provider</p>
-        <p className="mt-1 text-sm text-[var(--hc-sidebar-text)]">{providerName}</p>
         <button
           className="mt-4 inline-flex w-full items-center justify-center rounded-2xl border border-[var(--hc-sidebar-border)] bg-white/5 px-4 py-3 text-sm font-medium text-[var(--hc-sidebar-text)] transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
           disabled={isInitializing}
@@ -272,8 +427,26 @@ function ConversationRail({
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 py-3">
-        <nav className="space-y-1.5">
+      <div className="flex-none space-y-3 overflow-y-auto px-3 py-3 md:overflow-visible">
+        <RuntimeSummaryCard
+          executorModelLabel={executorModelLabel}
+          plannerModelLabel={plannerModelLabel}
+        />
+        <PermissionsCard
+          approvalPreferences={approvalPreferences}
+          isLoadingPreferences={isLoadingPreferences}
+          onTogglePreference={onTogglePreference}
+          savingPreferenceKey={savingPreferenceKey}
+        />
+      </div>
+
+      <div className="flex min-h-0 flex-1 flex-col border-t border-[var(--hc-sidebar-border)]">
+        <div className="flex-none px-4 pb-2 pt-3">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[var(--hc-sidebar-muted)]">
+            Conversations
+          </p>
+        </div>
+        <nav className="min-h-0 flex-1 space-y-1.5 overflow-y-auto overscroll-contain px-3 py-3">
           {conversations.map((conversation) => {
             const isActive = conversation.id === activeConversationId;
 
@@ -534,7 +707,13 @@ function EmptyState() {
   );
 }
 
-export function ChatApp({ providerName }: { providerName: string }) {
+export function ChatApp({
+  executorModelLabel,
+  plannerModelLabel,
+}: {
+  executorModelLabel: string;
+  plannerModelLabel: string;
+}) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const requestedConversationId = searchParams.get("conversationId")?.trim() || null;
@@ -563,6 +742,11 @@ export function ChatApp({ providerName }: { providerName: string }) {
   const [optimisticMessages, setOptimisticMessages] = useState<ChatMessage[]>([]);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [themeMode, setThemeMode] = useState<ThemeMode>("light");
+  const [approvalPreferences, setApprovalPreferences] = useState<ApprovalPreferences>(
+    createDefaultApprovalPreferences(),
+  );
+  const [isLoadingPreferences, setIsLoadingPreferences] = useState(true);
+  const [savingPreferenceKey, setSavingPreferenceKey] = useState<ApprovalPreferenceKey | null>(null);
 
   const visibleConversations = useMemo(() => {
     if (!activeConversationId) {
@@ -726,6 +910,18 @@ export function ChatApp({ providerName }: { providerName: string }) {
     return payload.conversation;
   }
 
+  async function fetchPreferences() {
+    const payload = await fetchJsonOrTextError<PreferencesPayload>(
+      "/api/preferences",
+      {
+        cache: "no-store",
+      },
+      "Failed to load permissions",
+    );
+
+    return payload.preferences;
+  }
+
   async function refreshConversations() {
     const nextConversations = await fetchConversations();
     setConversations(nextConversations);
@@ -833,6 +1029,36 @@ export function ChatApp({ providerName }: { providerName: string }) {
       cancelled = true;
     };
   }, [requestedConversationId, router]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadPreferences() {
+      setIsLoadingPreferences(true);
+
+      try {
+        const nextPreferences = await fetchPreferences();
+
+        if (!cancelled) {
+          setApprovalPreferences(nextPreferences);
+        }
+      } catch (loadError) {
+        if (!cancelled) {
+          setError(loadError instanceof Error ? loadError.message : "Failed to load permissions.");
+        }
+      } finally {
+        if (!cancelled) {
+          setIsLoadingPreferences(false);
+        }
+      }
+    }
+
+    void loadPreferences();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!activeConversationId) {
@@ -1077,6 +1303,43 @@ export function ChatApp({ providerName }: { providerName: string }) {
     }
   }
 
+  async function handleTogglePreference(key: ApprovalPreferenceKey) {
+    const previousPreferences = approvalPreferences;
+    const nextValue = !approvalPreferences[key];
+
+    setSavingPreferenceKey(key);
+    setError(null);
+    setApprovalPreferences({
+      ...previousPreferences,
+      [key]: nextValue,
+    });
+
+    try {
+      const payload = await fetchJsonOrTextError<PreferencesPayload>(
+        "/api/preferences",
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            preferences: {
+              [key]: nextValue,
+            },
+          }),
+        },
+        "Failed to update permissions",
+      );
+
+      setApprovalPreferences(payload.preferences);
+    } catch (updateError) {
+      setApprovalPreferences(previousPreferences);
+      setError(updateError instanceof Error ? updateError.message : "Failed to update permissions.");
+    } finally {
+      setSavingPreferenceKey((current) => (current === key ? null : current));
+    }
+  }
+
   const entries = useMemo<TimelineEntry[]>(() => {
     const streamingAssistant = liveAssistant && activeConversationId
       ? {
@@ -1185,19 +1448,24 @@ export function ChatApp({ providerName }: { providerName: string }) {
         : "Create a conversation to begin.";
 
   return (
-    <main className="min-h-screen text-[var(--hc-text)]">
-      <div className="flex min-h-screen flex-col md:flex-row">
+    <main className="h-dvh overflow-hidden text-[var(--hc-text)]">
+      <div className="flex h-full flex-col overflow-hidden md:flex-row">
         <ConversationRail
           activeConversationId={activeConversationId}
+          approvalPreferences={approvalPreferences}
           conversations={visibleConversations}
+          executorModelLabel={executorModelLabel}
           isInitializing={isInitializing}
+          isLoadingPreferences={isLoadingPreferences}
           onCreateConversation={handleCreateConversation}
           onSelectConversation={navigateToConversation}
-          providerName={providerName}
+          onTogglePreference={handleTogglePreference}
+          plannerModelLabel={plannerModelLabel}
+          savingPreferenceKey={savingPreferenceKey}
         />
 
-        <section className="flex min-h-screen min-w-0 flex-1 flex-col">
-          <header className="sticky top-0 z-10 border-b border-[var(--hc-border)] bg-[var(--hc-header)] backdrop-blur">
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          <header className="z-10 flex-none border-b border-[var(--hc-border)] bg-[var(--hc-header)] backdrop-blur">
             <div className="mx-auto flex w-full max-w-4xl items-center justify-between gap-4 px-4 py-4 sm:px-6">
               <div className="flex min-w-0 items-center gap-3">
                 <div className="min-w-0">
@@ -1218,9 +1486,9 @@ export function ChatApp({ providerName }: { providerName: string }) {
 
               <div className="flex items-center gap-3">
                 <ThemeToggle onToggle={toggleTheme} themeMode={themeMode} />
-                <div className="text-right text-sm text-[var(--hc-muted)]">
-                  <div className="font-medium uppercase tracking-[0.16em] text-[var(--hc-muted)]">{providerName}</div>
-                  <div>
+                <div className="rounded-2xl border border-[var(--hc-border)] bg-[var(--hc-panel)] px-4 py-3 text-right text-sm text-[var(--hc-muted)] shadow-sm">
+                  <div className="text-[11px] font-medium uppercase tracking-[0.16em] text-[var(--hc-muted)]">Status</div>
+                  <div className="mt-1 font-medium text-[var(--hc-text)]">
                     {pendingApprovalCount > 0
                       ? `${pendingApprovalCount} approval${pendingApprovalCount === 1 ? "" : "s"} waiting`
                       : "Ready"}
@@ -1237,11 +1505,11 @@ export function ChatApp({ providerName }: { providerName: string }) {
           ) : null}
 
           <div
-            className="relative flex-1 overflow-y-auto"
+            className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain"
             onScroll={handleTimelineScroll}
             ref={timelineViewportRef}
           >
-            <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col px-4 py-6 sm:px-6">
+            <div className="mx-auto flex min-h-full w-full max-w-4xl flex-col px-4 py-6 sm:px-6">
               {entries.length === 0 && !liveStatus ? <EmptyState /> : null}
 
               <div className="space-y-5">
@@ -1299,7 +1567,7 @@ export function ChatApp({ providerName }: { providerName: string }) {
             ) : null}
           </div>
 
-          <div className="border-t border-[var(--hc-border)] bg-[var(--hc-header)]">
+          <div className="flex-none border-t border-[var(--hc-border)] bg-[var(--hc-header)]">
             <form className="mx-auto w-full max-w-4xl px-4 py-5 sm:px-6" onSubmit={handleSubmit}>
               <div className="rounded-[1.75rem] border border-[var(--hc-border-strong)] bg-[var(--hc-composer)] p-3 shadow-[var(--hc-shadow)]">
                 <textarea
