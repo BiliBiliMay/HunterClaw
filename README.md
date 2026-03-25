@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./public/hunterclaw-logo.svg" alt="HunterClaw logo" width="220" />
+  <img src="./HunterClaw_logo.png" alt="HunterClaw logo" width="220" />
 </p>
 
 <h1 align="center">HunterClaw</h1>
