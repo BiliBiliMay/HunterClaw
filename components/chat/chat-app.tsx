@@ -385,30 +385,106 @@ function PermissionsCard({
   );
 }
 
-function ConversationRail({
-  activeConversationId,
+function SettingsDialog({
   approvalPreferences,
-  conversations,
   executorModelLabel,
-  isInitializing,
   isLoadingPreferences,
-  onCreateConversation,
+  isOpen,
+  onClose,
   onTogglePreference,
-  onSelectConversation,
   plannerModelLabel,
   savingPreferenceKey,
 }: {
-  activeConversationId: string | null;
   approvalPreferences: ApprovalPreferences;
-  conversations: ConversationSummary[];
   executorModelLabel: string;
-  isInitializing: boolean;
   isLoadingPreferences: boolean;
-  onCreateConversation: () => Promise<void>;
+  isOpen: boolean;
+  onClose: () => void;
   onTogglePreference: (key: ApprovalPreferenceKey) => void;
-  onSelectConversation: (conversationId: string) => void;
   plannerModelLabel: string;
   savingPreferenceKey: ApprovalPreferenceKey | null;
+}) {
+  if (!isOpen) {
+    return null;
+  }
+
+  return (
+    <div className="absolute inset-0 z-40 flex items-end justify-center bg-slate-950/55 p-3 backdrop-blur-sm md:items-center md:p-6">
+      <button
+        aria-label="Close settings"
+        className="absolute inset-0"
+        onClick={onClose}
+        type="button"
+      />
+      <div className="relative flex max-h-[min(90dvh,52rem)] w-full max-w-4xl flex-col overflow-hidden rounded-[2rem] border border-[var(--hc-sidebar-border)] bg-[var(--hc-sidebar)] text-[var(--hc-sidebar-text)] shadow-[var(--hc-shadow)]">
+        <div className="flex items-start justify-between gap-4 border-b border-[var(--hc-sidebar-border)] px-5 py-4 md:px-6">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[var(--hc-sidebar-muted)]">
+              Settings
+            </p>
+            <h2 className="mt-2 text-2xl font-semibold tracking-tight text-[var(--hc-sidebar-text)]">
+              HunterClaw settings
+            </h2>
+            <p className="mt-2 text-sm text-[var(--hc-sidebar-muted)]">
+              Manage runtime details and approval defaults without leaving the conversation.
+            </p>
+          </div>
+          <button
+            className="rounded-full border border-[var(--hc-sidebar-border)] bg-white/5 px-4 py-2 text-sm font-medium text-[var(--hc-sidebar-text)] transition hover:bg-white/10"
+            onClick={onClose}
+            type="button"
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="grid min-h-0 gap-4 overflow-y-auto overscroll-contain p-4 md:grid-cols-[minmax(0,15rem)_minmax(0,1fr)] md:p-6">
+          <div className="rounded-[1.5rem] border border-[var(--hc-sidebar-border)] bg-black/10 p-4">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[var(--hc-sidebar-muted)]">
+              Sections
+            </p>
+            <div className="mt-3 space-y-2 text-sm">
+              <div className="rounded-2xl bg-white/10 px-3 py-2 font-medium text-[var(--hc-sidebar-text)]">
+                Runtime
+              </div>
+              <div className="rounded-2xl bg-white/5 px-3 py-2 font-medium text-[var(--hc-sidebar-text)]">
+                Permissions
+              </div>
+            </div>
+          </div>
+
+          <div className="min-h-0 space-y-4">
+            <RuntimeSummaryCard
+              executorModelLabel={executorModelLabel}
+              plannerModelLabel={plannerModelLabel}
+            />
+            <PermissionsCard
+              approvalPreferences={approvalPreferences}
+              isLoadingPreferences={isLoadingPreferences}
+              onTogglePreference={onTogglePreference}
+              savingPreferenceKey={savingPreferenceKey}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConversationRail({
+  activeConversationId,
+  conversations,
+  isInitializing,
+  onCreateConversation,
+  onOpenSettings,
+  onSelectConversation,
+}: {
+  activeConversationId: string | null;
+  conversations: ConversationSummary[];
+  isInitializing: boolean;
+  onCreateConversation: () => Promise<void>;
+  onOpenSettings: () => void;
+  onSelectConversation: (conversationId: string) => void;
 }) {
   return (
     <aside className="flex max-h-[45vh] w-full flex-col border-b border-[var(--hc-sidebar-border)] bg-[var(--hc-sidebar)] text-[var(--hc-sidebar-text)] md:h-full md:max-h-none md:w-[22rem] md:flex-none md:border-b-0 md:border-r md:overflow-hidden">
@@ -427,20 +503,7 @@ function ConversationRail({
         </button>
       </div>
 
-      <div className="flex-none space-y-3 overflow-y-auto px-3 py-3 md:overflow-visible">
-        <RuntimeSummaryCard
-          executorModelLabel={executorModelLabel}
-          plannerModelLabel={plannerModelLabel}
-        />
-        <PermissionsCard
-          approvalPreferences={approvalPreferences}
-          isLoadingPreferences={isLoadingPreferences}
-          onTogglePreference={onTogglePreference}
-          savingPreferenceKey={savingPreferenceKey}
-        />
-      </div>
-
-      <div className="flex min-h-0 flex-1 flex-col border-t border-[var(--hc-sidebar-border)]">
+      <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex-none px-4 pb-2 pt-3">
           <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[var(--hc-sidebar-muted)]">
             Conversations
@@ -482,6 +545,19 @@ function ConversationRail({
             );
           })}
         </nav>
+      </div>
+
+      <div className="flex-none border-t border-[var(--hc-sidebar-border)] p-3">
+        <button
+          className="flex w-full items-center justify-between rounded-2xl border border-[var(--hc-sidebar-border)] bg-white/5 px-4 py-3 text-left text-sm font-medium text-[var(--hc-sidebar-text)] transition hover:bg-white/10"
+          onClick={onOpenSettings}
+          type="button"
+        >
+          <span>Settings</span>
+          <span className="text-xs uppercase tracking-[0.18em] text-[var(--hc-sidebar-muted)]">
+            Runtime
+          </span>
+        </button>
       </div>
     </aside>
   );
@@ -747,6 +823,7 @@ export function ChatApp({
   );
   const [isLoadingPreferences, setIsLoadingPreferences] = useState(true);
   const [savingPreferenceKey, setSavingPreferenceKey] = useState<ApprovalPreferenceKey | null>(null);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   const visibleConversations = useMemo(() => {
     if (!activeConversationId) {
@@ -1059,6 +1136,21 @@ export function ChatApp({
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!isSettingsOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsSettingsOpen(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isSettingsOpen]);
 
   useEffect(() => {
     if (!activeConversationId) {
@@ -1448,20 +1540,15 @@ export function ChatApp({
         : "Create a conversation to begin.";
 
   return (
-    <main className="h-dvh overflow-hidden text-[var(--hc-text)]">
+    <main className="relative h-dvh overflow-hidden text-[var(--hc-text)]">
       <div className="flex h-full flex-col overflow-hidden md:flex-row">
         <ConversationRail
           activeConversationId={activeConversationId}
-          approvalPreferences={approvalPreferences}
           conversations={visibleConversations}
-          executorModelLabel={executorModelLabel}
           isInitializing={isInitializing}
-          isLoadingPreferences={isLoadingPreferences}
           onCreateConversation={handleCreateConversation}
+          onOpenSettings={() => setIsSettingsOpen(true)}
           onSelectConversation={navigateToConversation}
-          onTogglePreference={handleTogglePreference}
-          plannerModelLabel={plannerModelLabel}
-          savingPreferenceKey={savingPreferenceKey}
         />
 
         <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
@@ -1599,6 +1686,17 @@ export function ChatApp({
           </div>
         </section>
       </div>
+
+      <SettingsDialog
+        approvalPreferences={approvalPreferences}
+        executorModelLabel={executorModelLabel}
+        isLoadingPreferences={isLoadingPreferences}
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        onTogglePreference={handleTogglePreference}
+        plannerModelLabel={plannerModelLabel}
+        savingPreferenceKey={savingPreferenceKey}
+      />
     </main>
   );
 }
